@@ -2,10 +2,17 @@
 
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 CONVERT_TIMEOUT_SECONDS = 120
+
+# Windows 설치본은 기본적으로 PATH에 등록되지 않으므로 기본 설치 경로도 확인한다.
+_WINDOWS_FALLBACK_PATHS = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+)
 
 
 class ConversionError(RuntimeError):
@@ -13,7 +20,14 @@ class ConversionError(RuntimeError):
 
 
 def _find_soffice() -> str | None:
-    return shutil.which("soffice") or shutil.which("libreoffice")
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found:
+        return found
+    if sys.platform == "win32":
+        for candidate in _WINDOWS_FALLBACK_PATHS:
+            if Path(candidate).exists():
+                return candidate
+    return None
 
 
 def convert_to_pdf(src_path: Path, workdir: Path) -> bytes:
@@ -29,9 +43,10 @@ def convert_to_pdf(src_path: Path, workdir: Path) -> bytes:
     # 동시 요청 시 LibreOffice 사용자 프로필이 충돌하지 않도록 매 변환마다
     # 격리된 프로필 디렉터리를 사용한다.
     with tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_dir:
+        profile_uri = Path(profile_dir).as_uri()
         cmd = [
             soffice_bin,
-            f"-env:UserInstallation=file://{profile_dir}",
+            f"-env:UserInstallation={profile_uri}",
             "--headless",
             "--norestore",
             "--convert-to",
