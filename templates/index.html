@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>한글(HWP) → PDF 변환기</title>
+  <style>
+    body {
+      font-family: -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+      max-width: 480px;
+      margin: 80px auto;
+      padding: 0 16px;
+      color: #222;
+      background: #f7f7f8;
+    }
+    h1 { font-size: 1.4rem; }
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 24px;
+    }
+    input[type=file] { display: block; margin: 16px 0; width: 100%; }
+    button {
+      background: #2b6cb0;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    button:hover { background: #234e8c; }
+    .flash {
+      background: #fdecea;
+      color: #b3261e;
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+    }
+    .hint { color: #666; font-size: 0.85rem; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>한글(HWP) → PDF 변환기</h1>
+  <div class="card">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for message in messages %}
+          <div class="flash">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    <form action="{{ url_for('convert') }}" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".hwp,.hwpx" required>
+      <button type="submit">PDF로 변환</button>
+    </form>
+    <p class="hint">.hwp, .hwpx 파일만 지원하며, 최대 20MB까지 업로드할 수 있습니다.</p>
+  </div>
+</body>
+</html>
