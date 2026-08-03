@@ -60,6 +60,26 @@ python app.py
    주소(예: `192.168.0.15`)를 확인한 뒤 다른 기기 브라우저에서
    `http://192.168.0.15:5000`으로 접속합니다.
 
+## Windows에서 설치 없이 실행 (포터블)
+
+Python/LibreOffice의 설치 마법사를 실행하지 않고, 압축 풀기 + 더블클릭만으로 실행하고
+싶다면 `portable/` 폴더의 스크립트를 사용하세요. 실제로는 "포터블(설치 프로그램 없는)"
+버전의 Python과 LibreOffice를 이 폴더 안에 풀어서 쓰는 방식이라, 관리자 권한이나
+레지스트리 변경 없이 동작합니다.
+
+1. 이 저장소를 내려받아 압축을 풉니다 (GitHub의 "Code → Download ZIP").
+2. `portable\setup.bat`을 더블클릭합니다. Python 임베더블 패키지와 pip를
+   `portable\python-embed\`에 자동으로 내려받아 준비하고, 이 프로젝트의 의존성을
+   설치합니다. (최초 1회만 인터넷 연결이 필요합니다.)
+3. [portableapps.com/apps/office/libreoffice_portable](https://portableapps.com/apps/office/libreoffice_portable)에서
+   LibreOffice Portable을 내려받아, 다음 경로에 `soffice.exe`가 있도록 `portable`
+   폴더 안에 압축을 풉니다: `portable\LibreOfficePortable\App\libreoffice\program\soffice.exe`
+4. `portable\run.bat`을 더블클릭하면 서버가 시작됩니다. 브라우저에서
+   `http://localhost:5000`으로 접속합니다.
+
+다른 기기에서도 쓰려면 위 "Windows 개인 노트북에서 실행" 절의 5~6단계(방화벽에서
+"개인 네트워크"만 허용, `ipconfig`로 IP 확인)를 그대로 따르면 됩니다.
+
 ## 컨테이너로 실행 (Podman)
 
 LibreOffice 설치 없이 바로 실행하고 싶다면 컨테이너 이미지를 사용할 수 있습니다.

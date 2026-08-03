@@ -1,5 +1,6 @@
 """LibreOffice 기반 HWP/HWPX -> PDF 변환 로직."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -20,9 +21,15 @@ class ConversionError(RuntimeError):
 
 
 def _find_soffice() -> str | None:
+    # 포터블(설치 없는) 배포본처럼 임의 경로에 있는 soffice를 쓰고 싶을 때의 탈출구.
+    env_override = os.environ.get("SOFFICE_PATH")
+    if env_override and Path(env_override).exists():
+        return env_override
+
     found = shutil.which("soffice") or shutil.which("libreoffice")
     if found:
         return found
+
     if sys.platform == "win32":
         for candidate in _WINDOWS_FALLBACK_PATHS:
             if Path(candidate).exists():
