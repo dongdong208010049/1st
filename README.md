@@ -29,14 +29,21 @@ python app.py
 
 브라우저에서 `http://localhost:5000` 에 접속해 파일을 업로드합니다.
 
-## Docker로 실행
+## 컨테이너로 실행 (Podman)
 
-LibreOffice 설치 없이 바로 실행하고 싶다면 Docker 이미지를 사용할 수 있습니다.
+LibreOffice 설치 없이 바로 실행하고 싶다면 컨테이너 이미지를 사용할 수 있습니다.
+
+> **Docker Desktop 대신 Podman을 권장합니다.** Docker Desktop은 직원 250명 이상 또는
+> 연매출 1000만 달러 이상인 회사에서 사용 시 유료 구독이 필요합니다. Podman(및
+> Podman Desktop)은 Apache 2.0 오픈소스로 회사 규모와 무관하게 무료이며, 명령어가
+> Docker와 거의 동일해 아래 `Dockerfile`을 그대로 사용할 수 있습니다.
 
 ```bash
-docker build -t hwp2pdf .
-docker run --rm -p 5000:5000 hwp2pdf
+podman build -t hwp2pdf .
+podman run --rm -p 5000:5000 hwp2pdf
 ```
+
+Docker Engine(CLI, Desktop 아님)을 이미 쓰고 있다면 `podman`을 `docker`로 바꿔도 동일하게 동작합니다.
 
 ## 테스트
 
