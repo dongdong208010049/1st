@@ -164,10 +164,9 @@ def test_mock_collection_fills_all_sources(seeded):
     for code in ("debt_ratio", "revenue", "headcount", "biz_status"):
         assert code in values
     runs = models.list_runs(seeded)
-    assert {run["source"] for run in runs} == {
-        "dart", "credit", "insurance", "nts", "factory", "procurement",
-        "risk_list", "submission",
-    }
+    from partners.collectors import COLLECTORS
+
+    assert {run["source"] for run in runs} == {c.source for c in COLLECTORS}
     assert all(run["status"] == "ok" for run in runs)
 
 
@@ -486,14 +485,24 @@ def test_no_future_dated_events(seeded):
     assert rows["n"] == 0
 
 
-def test_yearly_chart_falls_back_to_headcount(seeded):
+def test_yearly_chart_fallback_chain(seeded):
+    """공시 매출 → 공공 수주 → 연금 인원 순으로 대체한다."""
     from partners.views import yearly_chart
 
     period = models.known_periods(seeded, limit=1)[-1]
     small = next(p for p in models.list_partners(seeded) if p["name"] == "성진지그")
     chart = yearly_chart(seeded, small["id"], period)
-    assert chart["code"] == "headcount"  # 공시 매출이 없으니 인원으로 대체
+    assert chart["code"] == "public_award"  # 공시가 없으면 실측 수주가 먼저다
     assert len(chart["bars"]) == 3
+    assert "조달청" in chart["note"]
+
+    # 수주 자료까지 없으면 연금 인원으로 내려간다.
+    seeded.execute(
+        "DELETE FROM metric_values WHERE partner_id = ? AND metric_code LIKE 'public_award%'",
+        (small["id"],),
+    )
+    seeded.commit()
+    assert yearly_chart(seeded, small["id"], period)["code"] == "headcount"
 
     listed = next(p for p in models.list_partners(seeded) if p["name"] == "동성테크")
     revenue_chart = yearly_chart(seeded, listed["id"], period)
@@ -620,6 +629,138 @@ def test_same_city_name_in_different_provinces():
     assert gwangju_metro[1] < gyeonggi_gwangju[1]
 
 
+# --- 내부 거래 / 교차검증 / 특허 -------------------------------------------
+
+
+def test_internal_trade_metrics_are_collected(seeded):
+    """공공자료보다 빠른 신호(납기·불량·선급금·의존도)가 채워져야 한다."""
+    period = models.known_periods(seeded, limit=1)[-1]
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "대한정밀공업")
+    values = models.values_as_of(seeded, partner["id"], period)
+    for code in ("otd_rate", "reject_rate", "prepay_requests", "dependency_ratio"):
+        assert code in values, code
+    # 부실 협력사는 납기가 무너지고 선급금 요청이 나온다.
+    assert values["otd_rate"]["value"] < 95
+    assert values["prepay_requests"]["value"] >= 1
+    # 값은 현실적인 범위 안에 있어야 한다.
+    assert 0 <= values["otd_rate"]["value"] <= 100
+    assert 0 < values["reject_rate"]["value"] <= 10
+    assert 0 <= values["dependency_ratio"]["value"] <= 100
+    events = [e["kind"] for e in models.list_risk_events(seeded, partner["id"])]
+    assert "선급금 요청" in events
+
+
+def test_internal_trade_reads_csv(conn, tmp_path, monkeypatch):
+    csv_path = tmp_path / "internal.csv"
+    csv_path.write_text(
+        "biz_no,period,order_amount,otd_rate,reject_rate,prepay_requests,dependency_ratio\n"
+        f"5556667778,{models.current_period()},120000000,92.5,3.1,2,64.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PARTNERS_INTERNAL_CSV", str(csv_path))
+
+    partner_id = models.upsert_partner(conn, name="시험사", biz_no="5556667778", profile="watch")
+    run_collection(conn, models.recent_periods(models.current_period(), 6), ["internal"])
+    values = models.values_as_of(conn, partner_id, models.current_period())
+    assert values["otd_rate"]["value"] == 92.5
+    assert values["dependency_ratio"]["value"] == 64.0
+    assert values["otd_rate"]["source"] == "internal"
+    run = next(row for row in models.list_runs(conn) if row["source"] == "internal")
+    assert run["mode"] == "live"
+
+
+def test_delivery_failure_lowers_score(conn):
+    defs = models.list_metric_defs(conn)
+    good = score_partner(defs, _values(otd_rate=99, reject_rate=0.4, prepay_requests=0))
+    bad = score_partner(defs, _values(otd_rate=84, reject_rate=5.5, prepay_requests=3))
+    assert good.score > bad.score
+    assert good.category_signal("거래") == "green"
+    assert bad.category_signal("거래") == "red"
+
+
+def test_health_insurance_cross_check(seeded):
+    """연금과 건보 가입자 괴리가 지표로 남는다."""
+    period = models.known_periods(seeded, limit=1)[-1]
+    gaps = {}
+    for partner in models.list_partners(seeded):
+        values = models.values_as_of(seeded, partner["id"], period)
+        if "insured_gap" in values:
+            gaps[partner["name"]] = values["insured_gap"]["value"]
+    assert gaps
+    # 부실 협력사는 건보 인원이 연금보다 많이 빠져 있다(일용·외주 전환).
+    assert gaps["대한정밀공업"] < gaps["동성테크"]
+
+
+def test_patent_count_is_reference_only(conn):
+    defn = next(d for d in models.list_metric_defs(conn) if d["code"] == "patent_count")
+    assert defn["direction"] == "info"
+    assert defn["weight"] == 0
+    # 참고용이라 점수에 영향을 주지 않는다.
+    with_patents = score_partner(conn and models.list_metric_defs(conn), _values(patent_count=30, otd_rate=99))
+    without = score_partner(models.list_metric_defs(conn), _values(otd_rate=99))
+    assert with_patents.score == without.score
+
+
+def test_risk_csv_supports_new_kinds(conn, tmp_path, monkeypatch):
+    csv_path = tmp_path / "risk.csv"
+    csv_path.write_text(
+        "biz_no,kind,title,occurred_on,severity,source,url\n"
+        "7778889990,해산,법인 해산등기 확인,2026-08-02,,인터넷등기소,\n"
+        "7778889990,환경위반,폐수 기준 초과 과징금,2026-06-11,,환경부,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PARTNERS_RISK_CSV", str(csv_path))
+
+    partner_id = models.upsert_partner(conn, name="해산사", biz_no="7778889990", profile="watch")
+    run_collection(conn, models.recent_periods("2026-09", 12), ["risk_list"])
+    values = models.values_as_of(conn, partner_id, "2026-09")
+    assert values["legal_count"]["value"] == 1      # 해산
+    assert values["sanction_count"]["value"] == 1   # 환경위반
+    events = {e["kind"]: e["severity"] for e in models.list_risk_events(conn, partner_id)}
+    assert events["해산"] == "critical"
+    assert events["환경위반"] == "warn"
+
+
+def test_credit_api_hook_is_used_when_configured(conn, monkeypatch):
+    """구독 API가 설정되면 CSV 대신 그쪽을 쓴다(필드명은 환경변수로 맞춘다)."""
+    from partners.collectors import credit
+
+    monkeypatch.setenv("CREDIT_API_URL", "https://example.test/credit")
+    monkeypatch.setenv("CREDIT_API_KEY", "dummy")
+    monkeypatch.setenv("CREDIT_FIELD_GRADE", "cbGrade")
+    monkeypatch.setenv("CREDIT_FIELD_DATE", "evalDt")
+    monkeypatch.setattr(
+        credit, "get_json",
+        lambda url, params=None: {"data": [{"cbGrade": "BB", "evalDt": "2026-05-20"}]},
+    )
+
+    partner_id = models.upsert_partner(conn, name="등급사", biz_no="4445556667", profile="watch")
+    run_collection(conn, models.recent_periods("2026-09", 12), ["credit"])
+    value = models.values_as_of(conn, partner_id, "2026-09")["credit_score"]
+    assert value["text_value"] == "신용 BB"
+    assert value["value"] == 68.0
+
+
+def test_optional_doc_types_do_not_affect_freshness(conn):
+    """수출실적증명 같은 선택 자료는 '제출 경과' 지표를 대신하지 않는다."""
+    partner_id = models.upsert_partner(conn, name="수출사", biz_no="3334445556", profile="small_healthy")
+    models.add_submission(
+        conn, partner_id, doc_type="수출실적증명",
+        submitted_on=f"{models.current_period()}-01", period="2026 상반기",
+    )
+    run_collection(conn, models.recent_periods(models.current_period(), 6), ["submission"])
+    value = models.values_as_of(conn, partner_id, models.current_period())["doc_freshness"]
+    assert value["text_value"] == "제출 없음"
+
+    models.add_submission(
+        conn, partner_id, doc_type="표준재무제표증명",
+        submitted_on=f"{models.current_period()}-01", period="2025 회계연도",
+    )
+    run_collection(conn, models.recent_periods(models.current_period(), 6), ["submission"])
+    value = models.values_as_of(conn, partner_id, models.current_period())["doc_freshness"]
+    assert value["value"] == 0.0
+
+
 # --- 계열사 / 변동이력 화면 / 픽토그램 ---------------------------------------
 
 
@@ -691,9 +832,10 @@ def test_changes_page_filters_and_links(client):
 
 
 def test_changes_are_not_duplicated_by_seed(conn, tmp_path):
-    """시드가 수집이 남긴 사건을 다시 기록하지 않아야 한다."""
+    """시드가 수집이 남긴 사건을 다시 기록하지 않아야 하고, 두 번 돌려도 멱등해야 한다."""
     connection = models.connect(tmp_path / "dup.db")
     seed.seed_all(connection, months=12)
+    seed.seed_all(connection, months=12)   # 두 번 눌러도 티커가 두 줄이 되지 않는다
     rows = connection.execute(
         "SELECT partner_id, kind, title, COALESCE(detail, '') AS detail, COUNT(*) AS n "
         "FROM change_log GROUP BY partner_id, kind, title, detail HAVING n > 1"

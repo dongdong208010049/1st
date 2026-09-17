@@ -35,15 +35,15 @@ MARKER_SHAPES = ("circle", "square", "triangle", "diamond", "hexagon", "pentagon
 # 카테고리·변경 종류 픽토그램(글을 줄이고 아이콘으로 읽게 한다)
 CATEGORY_ICONS = {
     "기업상태": "building", "재무": "coins", "매출": "trend",
-    "인원": "people", "경영환경": "shield",
+    "인원": "people", "거래": "handshake", "경영환경": "shield",
 }
 CHANGE_ICONS = {"상태": "building", "지표": "trend", "사건": "shield", "개요": "pencil", "신규": "plus"}
-MAP_WIDTH, MAP_HEIGHT = 350, 460
+MAP_WIDTH, MAP_HEIGHT = 430, 570
 TICKER_LIMIT = 24
 CHART_YEARS = 3
 CHART_WIDTH, CHART_PLOT_HEIGHT = 420, 150
 # 리스트의 카테고리 컬럼 순서. 지표를 추가하면 해당 카테고리 컬럼에 자동으로 붙는다.
-CATEGORY_ORDER = ("기업상태", "재무", "매출", "인원", "경영환경")
+CATEGORY_ORDER = ("기업상태", "재무", "매출", "인원", "거래", "경영환경")
 
 
 def db_path() -> str:
@@ -544,9 +544,11 @@ def yearly_chart(conn, partner_id: int, period: str, years: int = CHART_YEARS) -
     end_year = int(period[:4])
     wanted = [str(year) for year in range(end_year - years + 1, end_year + 1)]
 
+    # 대체 순서: 공시 매출 → 공공 수주(실측) → 연금 가입자수
     for code, label, unit, note in (
         ("revenue", "매출액", "억원", "DART 공시 또는 직접 입력"),
-        ("headcount", "가입자수", "명", "매출 자료가 없어 인원으로 대체"),
+        ("public_award", "공공 수주", "백만원", "공시 매출이 없어 조달청 낙찰실적으로 대체"),
+        ("headcount", "가입자수", "명", "매출·수주 자료가 없어 연금 인원으로 대체"),
     ):
         rows = conn.execute(
             "SELECT period, value FROM metric_values WHERE partner_id = ? AND metric_code = ? "

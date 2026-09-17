@@ -6,19 +6,26 @@ from .base import Collector, CollectorError, CollectResult, Event, ProfileFact, 
 from .credit import CreditCollector
 from .dart import DartCollector
 from .factory import FactoryCollector, fill_worker_gap
+from .health import HealthInsuranceCollector, fill_insured_gap
+from .internal import InternalTradeCollector
+from .ipr import IprCollector
 from .insurance import InsuranceCollector, fill_changes
 from .nts import NtsCollector
 from .procurement import ProcurementCollector
 from .risk_list import RiskListCollector
 from .submission import SubmissionCollector
 
+# 실행 순서가 의미를 갖는다: 연금(인원) → 공장·건보(교차검증) 순으로 둔다.
 COLLECTORS: tuple[Collector, ...] = (
     DartCollector(),
     CreditCollector(),
     InsuranceCollector(),
     NtsCollector(),
     FactoryCollector(),
+    HealthInsuranceCollector(),
     ProcurementCollector(),
+    IprCollector(),
+    InternalTradeCollector(),
     RiskListCollector(),
     SubmissionCollector(),
 )
@@ -107,9 +114,10 @@ def run_collection(conn, periods: list[str], sources: list[str] | None = None) -
                         reading.value, reading.text, collector.source,
                     )
 
-            # 공장등록 종업원수와 연금 가입자수의 괴리는 두 소스가 다 모인 뒤 계산한다.
-            if collector.source == "factory":
-                for reading in fill_worker_gap(conn, models, partner["id"], periods):
+            # 교차검증 지표는 두 소스가 다 모인 뒤 계산한다.
+            if collector.source in ("factory", "health"):
+                derive = fill_worker_gap if collector.source == "factory" else fill_insured_gap
+                for reading in derive(conn, models, partner["id"], periods):
                     models.put_metric_value(
                         conn, partner["id"], reading.code, reading.period,
                         reading.value, reading.text, collector.source,

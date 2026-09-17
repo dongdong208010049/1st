@@ -6,10 +6,13 @@ DART가 커버하지 않는 소기업도 신용평가사는 등급을 산출한�
   1) 협력사가 제출하는 기업신용평가서 → 등급을 CSV/화면으로 적재
   2) 평가사 기업정보 API 구독 → 사업자번호로 조회
 
-이 저장소는 평가사 규격이 계약마다 달라 CSV 적재를 1차 경로로 둔다.
-  - PARTNERS_CREDIT_CSV 환경변수 또는 data/credit_grades.csv
-  - 컬럼: biz_no,grade,evaluated_on,watch(선택),note(선택)
-CSV가 없으면 목업으로 동작한다.
+이 저장소는 평가사 규격이 계약마다 달라 두 경로를 둔다.
+  1) 구독 API: CREDIT_API_URL + CREDIT_API_KEY
+     응답 필드명이 평가사마다 달라 CREDIT_FIELD_GRADE(기본 grade),
+     CREDIT_FIELD_DATE(기본 evaluated_on)로 지정한다.
+  2) CSV 적재: PARTNERS_CREDIT_CSV 또는 data/credit_grades.csv
+     컬럼: biz_no,grade,evaluated_on,watch(선택),note(선택)
+둘 다 없으면 목업으로 동작한다.
 """
 
 import csv
@@ -17,7 +20,7 @@ import os
 import random
 from pathlib import Path
 
-from .base import Collector, CollectResult, Event, Reading, clamp_date
+from .base import Collector, CollectResult, Event, Reading, clamp_date, get_json
 
 DEFAULT_CSV_PATH = Path("data/credit_grades.csv")
 
@@ -35,10 +38,13 @@ class CreditCollector(Collector):
     metric_codes = ("credit_score",)
 
     def available(self) -> bool:
-        return _csv_path().exists()
+        return bool(os.environ.get("CREDIT_API_URL") and os.environ.get("CREDIT_API_KEY")) or _csv_path().exists()
 
     def collect_live(self, partner, periods: list[str], conn=None) -> CollectResult:
-        rows = [row for row in _read_csv(_csv_path()) if row.get("biz_no") == partner["biz_no"]]
+        if os.environ.get("CREDIT_API_URL"):
+            rows = _from_api(partner)
+        else:
+            rows = [row for row in _read_csv(_csv_path()) if row.get("biz_no") == partner["biz_no"]]
         if not rows:
             return CollectResult()
 
@@ -97,6 +103,27 @@ class CreditCollector(Collector):
                 )
             )
         return CollectResult(readings=readings, events=events)
+
+
+def _from_api(partner) -> list[dict]:
+    """평가사 구독 API 응답을 CSV와 같은 모양으로 맞춘다."""
+    payload = get_json(
+        os.environ["CREDIT_API_URL"],
+        {"key": os.environ["CREDIT_API_KEY"], "bizNo": partner["biz_no"]},
+    )
+    records = payload.get("data") or payload.get("rows") or []
+    if isinstance(records, dict):
+        records = [records]
+    grade_field = os.environ.get("CREDIT_FIELD_GRADE", "grade")
+    date_field = os.environ.get("CREDIT_FIELD_DATE", "evaluated_on")
+    return [
+        {
+            "biz_no": partner["biz_no"],
+            "grade": str(record.get(grade_field) or "").strip(),
+            "evaluated_on": str(record.get(date_field) or "").strip(),
+        }
+        for record in records
+    ]
 
 
 def _csv_path() -> Path:

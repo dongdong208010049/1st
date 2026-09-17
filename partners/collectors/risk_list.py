@@ -6,6 +6,8 @@
   - 법원 회생·파산 사건 공고 (대한민국 법원 공고)
   - 부도(당좌거래정지), 공장·부동산 경매·공매 개시 (법원경매·온비드)
   - 국세·지방세 체납 (고액상습체납자 공개, 납세증명서 미발급)
+  - 법인등기 변동 (해산·청산, 대표자 변경, 본점 이전 — 등기 열람 후 적재)
+  - 환경·안전 위반 (환경부 위반사업장, 작업중지·조업정지 처분)
 소기업은 재무 공시가 없어도 위 사건은 그대로 드러난다. 부도·회생·경매 개시는
 재무제표보다 빠르고 확실한 신호라서 즉시위험으로 처리한다.
 이 명단들은 상시 개방 API가 일정하지 않아 CSV 적재를 1차 경로로 둔다.
@@ -36,6 +38,10 @@ KIND_TO_METRIC = {
     "경매": "legal_count",
     "공매": "legal_count",
     "체납": "legal_count",
+    "해산": "legal_count",
+    "등기변동": "sanction_count",
+    "환경위반": "sanction_count",
+    "조업정지": "legal_count",
 }
 
 SEVERITY_BY_KIND = {
@@ -47,6 +53,10 @@ SEVERITY_BY_KIND = {
     "경매": "critical",
     "공매": "warn",
     "체납": "warn",
+    "해산": "critical",
+    "조업정지": "critical",
+    "등기변동": "info",
+    "환경위반": "warn",
     "산재": "warn",
     "제재": "warn",
     "부정당업자": "warn",
@@ -113,8 +123,8 @@ def _aggregate(events: list[Event], periods: list[str]) -> list[Reading]:
         for kind_group, code in (
             (("임금체불",), "wage_arrears_count"),
             (("산재", "중대재해"), "accident_count"),
-            (("제재", "부정당업자"), "sanction_count"),
-            (("회생", "파산", "부도", "경매", "공매", "체납"), "legal_count"),
+            (("제재", "부정당업자", "등기변동", "환경위반"), "sanction_count"),
+            (("회생", "파산", "부도", "경매", "공매", "체납", "해산", "조업정지"), "legal_count"),
         ):
             count = sum(
                 1 for event in events if event.kind in kind_group and event.occurred_on[:7] <= period

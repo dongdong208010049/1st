@@ -353,7 +353,12 @@
 
     .kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
     .kv:last-child { border-bottom: none; }
-    .kv > span:first-child { color: var(--ink-2); }
+    .kv > span:first-child {
+      color: var(--ink-2); flex: 1 1 46%; min-width: 0;
+      word-break: keep-all;          /* 한글을 글자 단위로 쪼개지 않는다 */
+      overflow-wrap: break-word;
+    }
+    .kv > span:last-child { flex: 0 1 auto; min-width: 0; text-align: right; }
 
     /* ── 차트 ───────────────────────────────────────────── */
     .chart { display: block; width: min(100%, 460px); height: auto; overflow: visible; }

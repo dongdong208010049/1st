@@ -154,7 +154,10 @@ def fill_worker_gap(conn, models, partner_id: int, periods: list[str]) -> list[R
             continue
         gap = (insured["value"] - plant["value"]) / plant["value"] * 100
         readings.append(
-            Reading(period, "worker_gap", round(gap, 1), text=f"연금 {insured['value']:.0f} / 공장 {plant['value']:.0f}명")
+            Reading(
+                period, "worker_gap", round(gap, 1),
+                text=f"{insured['value']:.0f}↔{plant['value']:.0f}명",
+            )
         )
     return readings
 

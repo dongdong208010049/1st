@@ -35,9 +35,21 @@ METRIC_DEFS = (
     ("factory_status", "기업상태", "공장등록", None, "lower_better", 0, 2, 0, "factory", 12),
     ("plant_area", "기업상태", "공장 용지면적", "㎡", "info", None, None, 0, "factory", 13),
     ("plant_workers", "인원", "공장등록 종업원", "명", "info", None, None, 0, "factory", 46),
-    ("worker_gap", "인원", "연금·공장 인원 괴리", "%", "higher_better", -10, -60, 5, "factory", 47),
+    ("worker_gap", "인원", "연금↔공장 인원", "%", "higher_better", -10, -60, 5, "factory", 47),
     ("public_award", "매출", "공공 수주(1년)", "백만원", "info", None, None, 0, "procurement", 33),
     ("public_award_change", "매출", "공공 수주 증감", "%", "higher_better", 0, -40, 5, "procurement", 34),
+    # 내부 구매·납기: 공공자료보다 빠른 조기경보
+    ("otd_rate", "거래", "납기 준수율", "%", "higher_better", 98, 85, 15, "internal", 60),
+    ("reject_rate", "거래", "수입검사 불량률", "%", "lower_better", 0.5, 5, 10, "internal", 61),
+    ("prepay_requests", "거래", "선급금 요청", "건", "lower_better", 0, 3, 10, "internal", 62),
+    ("dependency_ratio", "거래", "당사 의존도", "%", "lower_better", 20, 75, 5, "internal", 63),
+    ("order_change_3m", "거래", "3개월 발주 증감", "%", "info", None, None, 0, "internal", 64),
+    # 건강보험: 연금 자료 교차검증
+    ("health_insured", "인원", "건보 가입자", "명", "info", None, None, 0, "health", 48),
+    ("insured_gap", "인원", "연금↔건보 인원", "%", "higher_better", -5, -40, 5, "health", 49),
+    ("health_arrears", "인원", "건보 체납", None, "lower_better", 0, 1, 5, "health", 50),
+    # 특허: 대체 가능성 판단용 참고 지표
+    ("patent_count", "기업상태", "특허·실용신안", "건", "info", None, None, 0, "ipr", 14),
 )
 
 # 기업개요 항목 기본값. 화면(설정)에서 추가할 수 있고, 수집기가 새 코드를 들고 오면
@@ -219,7 +231,7 @@ def seed_profile_samples(conn) -> None:
         models.add_change(
             conn, partner["id"], "개요",
             f"{models.DEFAULT_PROFILE_LABELS.get(field, (field,))[0]} 변경",
-            f"{old_value} → {new_value}", severity="warn", anchor="overview",
+            f"{old_value} → {new_value}", severity="warn", anchor="overview", dedupe=True,
         )
     conn.commit()
 
@@ -242,7 +254,7 @@ def seed_changes(conn, recent_months: int = 4) -> None:
                     conn, partner["id"], "상태", f"{entry['label']}로 변경",
                     f"{entry['since']} 확인",
                     severity="critical" if (entry["value"] or 0) >= 1 else "good",
-                    anchor="overview",
+                    anchor="overview", dedupe=True,
                 )
     conn.commit()
 

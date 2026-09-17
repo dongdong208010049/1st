@@ -392,7 +392,15 @@ REQUIRED_DOC_TYPES = (
     "납세증명서",
     "4대보험 완납증명",
 )
-OPTIONAL_DOC_TYPES = ("신용평가서", "기타")
+# 있으면 좋은 자료. 제출 경과 지표(doc_freshness)에는 넣지 않는다.
+OPTIONAL_DOC_TYPES = (
+    "신용평가서",
+    "사업자등록증",
+    "법인등기부등본",
+    "수출실적증명",   # 관세청 발급, 수출 매출 확인
+    "공장등록증명",
+    "기타",
+)
 
 
 def add_submission(conn: sqlite3.Connection, partner_id: int, **fields) -> int:
@@ -598,7 +606,22 @@ def add_change(
     detail: str | None = None,
     severity: str = "info",
     anchor: str | None = None,
+    dedupe: bool = False,
 ) -> int:
+    """변경 한 건을 기록한다.
+
+    dedupe=True면 같은 내용이 이미 있으면 건너뛴다(0을 돌려준다). 과거 시계열에서
+    뽑아 담는 경우에 쓴다. 운영 중 실제 변경은 같은 내용이 다시 일어날 수 있으므로
+    기본값은 중복을 허용한다.
+    """
+    if dedupe:
+        existing = conn.execute(
+            "SELECT id FROM change_log WHERE partner_id = ? AND kind = ? AND title = ? "
+            "AND COALESCE(detail, '') = COALESCE(?, '')",
+            (partner_id, kind, title, detail),
+        ).fetchone()
+        if existing:
+            return 0
     cursor = conn.execute(
         "INSERT INTO change_log (partner_id, kind, title, detail, severity, anchor, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
