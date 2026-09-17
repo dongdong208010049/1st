@@ -3,24 +3,34 @@
 METRIC_DEFS의 행을 추가하면 리스트·상세·점수에 자동 반영된다(항목 확장 지점).
 """
 
+from datetime import date
+
 from . import models
 from .collectors import run_collection
 
 # (code, category, label, unit, direction, good, bad, weight, source, sort)
 METRIC_DEFS = (
     ("biz_status", "기업상태", "사업자상태", None, "lower_better", 0, 2, 0, "nts", 10),
+    ("pension_status", "기업상태", "연금 사업장", None, "lower_better", 0, 2, 0, "insurance", 11),
     ("debt_ratio", "재무", "부채비율", "%", "lower_better", 100, 400, 20, "dart", 20),
     ("current_ratio", "재무", "유동비율", "%", "higher_better", 150, 80, 10, "dart", 21),
     ("equity_impairment", "재무", "자본잠식률", "%", "lower_better", 0, 50, 10, "dart", 22),
+    # 신용평가 등급은 DART가 커버하지 않는 소규모 협력사의 재무 대체 지표다.
+    ("credit_score", "재무", "신용평가 등급", "점", "higher_better", 80, 40, 15, "credit", 23),
     ("revenue", "매출", "매출액", "억원", "info", None, None, 0, "dart", 30),
     ("revenue_yoy", "매출", "매출 증감률", "%", "higher_better", 10, -30, 15, "dart", 31),
     ("op_margin", "매출", "영업이익률", "%", "higher_better", 8, -5, 10, "dart", 32),
     ("headcount", "인원", "가입자수", "명", "info", None, None, 0, "insurance", 40),
     ("headcount_change_3m", "인원", "3개월 인원 증감", "%", "higher_better", 0, -20, 15, "insurance", 41),
-    ("pension_arrears", "인원", "연금 체납", None, "lower_better", 0, 1, 5, "insurance", 42),
+    ("turnover_3m", "인원", "3개월 이탈률", "%", "lower_better", 5, 30, 10, "insurance", 42),
+    ("avg_pay", "인원", "1인당 신고소득", "만원", "info", None, None, 0, "insurance", 43),
+    ("avg_pay_change_6m", "인원", "6개월 소득 변화", "%", "higher_better", 0, -15, 10, "insurance", 44),
+    ("pension_arrears", "인원", "연금 체납", None, "lower_better", 0, 1, 5, "insurance", 45),
     ("wage_arrears_count", "경영환경", "임금체불", "건", "lower_better", 0, 2, 10, "risk_list", 50),
     ("accident_count", "경영환경", "산재·중대재해", "건", "lower_better", 0, 3, 5, "risk_list", 51),
     ("sanction_count", "경영환경", "행정제재", "건", "lower_better", 0, 2, 5, "risk_list", 52),
+    ("legal_count", "경영환경", "회생·파산·부도·경매", "건", "lower_better", 0, 1, 10, "risk_list", 53),
+    ("doc_freshness", "경영환경", "자료 제출 경과", "개월", "lower_better", 3, 15, 10, "submission", 54),
 )
 
 # 업(業) 분류 기본값. 화면(설정)에서 추가·수정할 수 있고, 여기에 행을 더해도 된다.
@@ -43,6 +53,25 @@ SAMPLE_PARTNERS = (
     ("삼환전자", "6068306789", "inspection", "반도체부품", "박민수", "1차", "healthy"),
     ("태광하이텍", "7098407890", "jig", "정밀가공", "정지훈", "2차", "closed"),
     ("나라프레스", "8108508901", "production", "프레스 가공", "정지훈", "2차", "suspended"),
+    # 아래 두 곳은 외부감사 대상이 아닌 소규모 업체다. DART에 재무가 없으므로
+    # 연금(인원·신고소득)·신용등급·제출자료·법적 사건으로만 감시된다.
+    ("성진지그", "9218609012", "jig", "치공구 제작", "김철수", "2차", "small_healthy"),
+    ("명진검사구", "1338709123", "inspection", "검사구 제작", "이영희", "2차", "small_distress"),
+)
+
+# 정기 징구 자료 샘플. (biz_no, doc_type, 제출일, 대상기간)
+SAMPLE_SUBMISSIONS = (
+    ("1048201234", "표준재무제표증명", -7, "2025 회계연도"),
+    ("2208102345", "표준재무제표증명", -2, "2025 회계연도"),
+    ("2208102345", "납세증명서", -1, None),
+    ("3138503456", "표준재무제표증명", -5, "2025 회계연도"),
+    ("4028104567", "표준재무제표증명", -2, "2025 회계연도"),
+    ("5178205678", "부가세 과세표준증명", -4, "2026년 1기"),
+    ("6068306789", "표준재무제표증명", -1, "2025 회계연도"),
+    ("9218609012", "표준재무제표증명", -2, "2025 회계연도"),
+    ("9218609012", "4대보험 완납증명", -1, None),
+    ("9218609012", "부가세 과세표준증명", -3, "2026년 1기"),
+    # 명진검사구는 독촉에도 제출이 없다. 그 자체가 신호다.
 )
 
 
@@ -85,11 +114,29 @@ def seed_sample_partners(conn) -> list[int]:
     ]
 
 
+def seed_sample_submissions(conn) -> None:
+    """샘플 제출 기록. 제출일은 '이번 달 기준 n개월 전'으로 만든다."""
+    today = date.today()
+    for biz_no, doc_type, month_offset, period in SAMPLE_SUBMISSIONS:
+        partner = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
+        if partner is None:
+            continue
+        stamp = models.shift_period(models.current_period(today), month_offset)
+        models.add_submission(
+            conn,
+            partner["id"],
+            doc_type=doc_type,
+            period=period,
+            submitted_on=f"{stamp}-{min(today.day, 28):02d}",
+        )
+
+
 def seed_all(conn, months: int = 12) -> None:
     """지표 정의 + 샘플 협력사 + 최근 12개월 수집값을 한 번에 채운다."""
     models.init_db(conn)
     seed_categories(conn)
     seed_metric_defs(conn)
     seed_sample_partners(conn)
+    seed_sample_submissions(conn)
     periods = models.recent_periods(models.current_period(), months)
     run_collection(conn, periods)

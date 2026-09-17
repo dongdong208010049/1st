@@ -91,6 +91,16 @@ def build_rows(conn, period: str) -> list[dict]:
     return rows
 
 
+def _is_weak(row: dict) -> bool:
+    """공시 재무가 없거나 자료가 덜 모여 등급 상한이 걸린 협력사.
+
+    소규모(비외감) 협력사가 대부분 여기에 들어온다. 제출자료 징구·신용등급 등록
+    대상 목록으로 쓴다.
+    """
+    score = row["score"]
+    return bool(score.grade_cap) or "dart" not in score.sources
+
+
 def _category_summary(rows: list[dict], categories) -> list[dict]:
     """업종별 협력사 수와 경고 건수. 리스트 상단 칩과 필터 링크로 쓴다."""
     summary = []
@@ -138,6 +148,7 @@ def index():
 
     query = (request.args.get("q") or "").strip()
     category = request.args.get("category") or ""
+    coverage = request.args.get("coverage") or ""
     signal = request.args.get("signal") or ""
     grade = request.args.get("grade") or ""
     manager = request.args.get("manager") or ""
@@ -155,6 +166,8 @@ def index():
         # 'none'은 미분류 협력사만 본다.
         wanted = "" if category == "none" else category
         rows = [row for row in rows if (row["partner"]["category_code"] or "") == wanted]
+    if coverage == "weak":
+        rows = [row for row in rows if _is_weak(row)]
     if signal:
         rows = [row for row in rows if row["score"].signal == signal]
     if grade:
@@ -171,6 +184,7 @@ def index():
         "amber": sum(1 for row in all_rows if row["score"].signal == "amber"),
         "green": sum(1 for row in all_rows if row["score"].signal == "green"),
         "critical": sum(1 for row in all_rows if row["score"].critical_reasons),
+        "weak": sum(1 for row in all_rows if _is_weak(row)),
         "stale": sum(1 for row in all_rows if row["score"].stale),
     }
     managers = sorted({row["partner"]["manager"] for row in all_rows if row["partner"]["manager"]})
@@ -187,7 +201,7 @@ def index():
         categories=CATEGORY_ORDER,
         signal_labels=SIGNAL_LABELS,
         filters={
-            "q": query, "category": category, "signal": signal,
+            "q": query, "category": category, "coverage": coverage, "signal": signal,
             "grade": grade, "manager": manager, "order": order,
         },
         category_labels=models.category_labels(conn),
@@ -207,17 +221,53 @@ def detail(partner_id: int):
         return redirect(url_for("partners.index"))
 
     if request.method == "POST":
-        models.update_partner_fields(
-            conn,
-            partner_id,
-            name=(request.form.get("name") or partner["name"]).strip(),
-            category_code=(request.form.get("category_code") or "").strip() or None,
-            industry=(request.form.get("industry") or "").strip() or None,
-            manager=(request.form.get("manager") or "").strip() or None,
-            tier=(request.form.get("tier") or "").strip() or None,
-            dart_corp_code=(request.form.get("dart_corp_code") or "").strip() or None,
-        )
-        flash("협력사 정보를 저장했습니다.")
+        action = request.form.get("action") or "update_partner"
+
+        if action == "add_submission":
+            submitted_on = (request.form.get("submitted_on") or "").strip()
+            doc_type = (request.form.get("doc_type") or "").strip()
+            if not submitted_on or not doc_type:
+                flash("자료 종류와 제출일을 입력해 주세요.")
+            else:
+                models.add_submission(
+                    conn,
+                    partner_id,
+                    doc_type=doc_type,
+                    period=(request.form.get("period") or "").strip() or None,
+                    submitted_on=submitted_on,
+                    note=(request.form.get("note") or "").strip() or None,
+                )
+                # 제출 경과 지표를 바로 다시 계산한다.
+                run_collection(conn, models.recent_periods(models.current_period(), 12), ["submission"])
+                flash(f"{doc_type} 제출 기록을 등록했습니다.")
+
+        elif action == "manual_value":
+            code = (request.form.get("metric_code") or "").strip()
+            period = (request.form.get("value_period") or "").strip()
+            raw_value = _as_float(request.form.get("value"))
+            if not code or not period or raw_value is None:
+                flash("지표·기간·값을 모두 입력해 주세요.")
+            else:
+                models.put_metric_value(
+                    conn, partner_id, code, period, raw_value,
+                    text_value=(request.form.get("value_text") or "").strip() or None,
+                    source="manual",
+                )
+                conn.commit()
+                flash(f"{code} {period} 값을 직접 입력했습니다.")
+
+        else:
+            models.update_partner_fields(
+                conn,
+                partner_id,
+                name=(request.form.get("name") or partner["name"]).strip(),
+                category_code=(request.form.get("category_code") or "").strip() or None,
+                industry=(request.form.get("industry") or "").strip() or None,
+                manager=(request.form.get("manager") or "").strip() or None,
+                tier=(request.form.get("tier") or "").strip() or None,
+                dart_corp_code=(request.form.get("dart_corp_code") or "").strip() or None,
+            )
+            flash("협력사 정보를 저장했습니다.")
         return redirect(url_for("partners.detail", partner_id=partner_id))
 
     periods = models.known_periods(conn, limit=24)
@@ -261,6 +311,10 @@ def detail(partner_id: int):
         signal_labels=SIGNAL_LABELS,
         category_options=models.list_categories(conn),
         category_labels=models.category_labels(conn),
+        submissions=models.list_submissions(conn, partner_id),
+        doc_types=models.REQUIRED_DOC_TYPES + models.OPTIONAL_DOC_TYPES,
+        metric_defs=defs,
+        recent_period_options=models.recent_periods(period, 12)[::-1],
     )
 
 
@@ -415,6 +469,9 @@ def api_partners():
                 "signal": result.signal,
                 "score": round(result.score, 1) if result.score is not None else None,
                 "critical_reasons": result.critical_reasons,
+                "coverage": round(result.coverage, 3),
+                "grade_cap": result.grade_cap,
+                "sources": result.sources,
                 "metrics": {
                     metric.code: {"value": metric.value, "text": metric.text, "signal": metric.signal}
                     for metric in result.metrics

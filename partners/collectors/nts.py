@@ -27,7 +27,7 @@ class NtsCollector(Collector):
     env_keys = ("DATA_GO_KR_KEY",)
     metric_codes = ("biz_status",)
 
-    def collect_live(self, partner, periods: list[str]) -> CollectResult:
+    def collect_live(self, partner, periods: list[str], conn=None) -> CollectResult:
         payload = post_json(
             NTS_ENDPOINT,
             {"b_no": [partner["biz_no"]]},
@@ -54,7 +54,7 @@ class NtsCollector(Collector):
             )
         return CollectResult(readings=[Reading(latest, "biz_status", value, text=label)], events=events)
 
-    def collect_mock(self, partner, periods: list[str]) -> CollectResult:
+    def collect_mock(self, partner, periods: list[str], conn=None) -> CollectResult:
         profile = partner["profile"] or "healthy"
         rng = random.Random(f"nts:{partner['biz_no']}")
         readings: list[Reading] = []

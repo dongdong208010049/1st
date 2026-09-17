@@ -7,6 +7,9 @@
   <div class="chip amber"><span class="n">{{ summary.amber }}</span><span class="small muted">주의 🟡</span></div>
   <div class="chip green"><span class="n">{{ summary.green }}</span><span class="small muted">정상 🟢</span></div>
   <div class="chip"><span class="n">{{ summary.critical }}</span><span class="small muted">즉시위험 사유</span></div>
+  <a class="chip" href="{{ url_for('partners.index', coverage='weak') }}" style="text-decoration:none">
+    <span class="n">{{ summary.weak }}</span><span class="small muted">자료 취약(공시 없음)</span>
+  </a>
   <div class="chip"><span class="n">{{ summary.stale }}</span><span class="small muted">자료 노후(90일+)</span></div>
 </div>
 
@@ -34,6 +37,10 @@
         <option value="{{ item.code }}" {% if filters.category == item.code %}selected{% endif %}>{{ item.label }}</option>
       {% endfor %}
       <option value="none" {% if filters.category == 'none' %}selected{% endif %}>미분류</option>
+    </select>
+    <select name="coverage">
+      <option value="">자료 전체</option>
+      <option value="weak" {% if filters.coverage == 'weak' %}selected{% endif %}>자료 취약(공시 없음)</option>
     </select>
     <select name="signal">
       <option value="">신호등 전체</option>
@@ -88,6 +95,11 @@
           <span class="dot {{ row.score.signal }}"></span>
           <span class="grade g-{{ row.score.grade }}">{{ row.score.grade }}</span>
           <span class="small muted">{{ '%.0f'|format(row.score.score) if row.score.score is not none else '—' }}</span>
+          {% if row.score.grade_cap %}
+            <div class="small stale" title="자료가 덜 모여 등급 상한을 적용했습니다">
+              자료 {{ '%.0f'|format(row.score.coverage * 100) }}% · 상한 {{ row.score.grade_cap }}
+            </div>
+          {% endif %}
         </td>
         <td>
           <a href="{{ url_for('partners.detail', partner_id=row.partner.id) }}"><strong>{{ row.partner.name }}</strong></a>

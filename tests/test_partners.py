@@ -73,7 +73,10 @@ def test_signal_and_grade_boundaries():
 def _values(**codes):
     today = models.now_iso()
     return {
-        code: {"value": value, "text_value": None, "period": "2026-09", "collected_at": today}
+        code: {
+            "value": value, "text_value": None, "period": "2026-09",
+            "collected_at": today, "source": "test",
+        }
         for code, value in codes.items()
     }
 
@@ -82,9 +85,11 @@ def test_weighted_average_ignores_missing_metrics(conn):
     defs = models.list_metric_defs(conn)
     result = score_partner(defs, _values(debt_ratio=100, revenue_yoy=10))
     assert result.score == pytest.approx(100.0)
-    assert result.grade == "A"
     # 두 지표만 채워졌으므로 충족률은 1보다 작다.
     assert 0 < result.coverage < 1
+    # 만점이어도 자료가 이만큼 비어 있으면 등급 상한이 걸린다.
+    assert result.grade_cap == "C"
+    assert result.grade == "C"
 
 
 def test_closed_business_forces_grade_e(conn):
@@ -116,7 +121,8 @@ def test_stale_data_is_flagged(conn):
     defs = models.list_metric_defs(conn)
     values = {
         "debt_ratio": {
-            "value": 100, "text_value": None, "period": "2025-01", "collected_at": "2025-01-05T00:00:00+00:00",
+            "value": 100, "text_value": None, "period": "2025-01",
+            "collected_at": "2025-01-05T00:00:00+00:00", "source": "dart",
         }
     }
     result = score_partner(defs, values, today=date(2026, 9, 17))
@@ -135,7 +141,9 @@ def test_mock_collection_fills_all_sources(seeded):
     for code in ("debt_ratio", "revenue", "headcount", "biz_status"):
         assert code in values
     runs = models.list_runs(seeded)
-    assert {run["source"] for run in runs} == {"dart", "insurance", "nts", "risk_list"}
+    assert {run["source"] for run in runs} == {
+        "dart", "credit", "insurance", "nts", "risk_list", "submission",
+    }
     assert all(run["status"] == "ok" for run in runs)
 
 
@@ -262,6 +270,174 @@ def test_detail_edit_changes_category(client):
     assert changed["category"] == "지그"
 
 
+# --- 소규모(비외감) 협력사 모니터링 -----------------------------------------
+
+
+def test_small_partner_has_no_dart_data_but_is_still_scored(seeded):
+    """DART에 재무가 없어도 연금·신용등급·제출자료로 점수가 나와야 한다."""
+    defs = models.list_metric_defs(seeded)
+    period = models.known_periods(seeded, limit=1)[-1]
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "성진지그")
+    values = models.values_as_of(seeded, partner["id"], period)
+
+    assert "debt_ratio" not in values  # 외부감사 대상이 아니라 공시가 없다
+    for code in ("headcount", "avg_pay", "credit_score", "doc_freshness", "biz_status"):
+        assert code in values, code
+
+    result = score_partner(defs, values, models.list_risk_events(seeded, partner["id"]))
+    assert result.score is not None
+    assert "dart" not in result.sources
+    assert {"insurance", "credit", "submission", "nts"} <= set(result.sources)
+
+
+def test_coverage_cap_prevents_false_clean_grade(conn):
+    """자료가 거의 없는데 만점이면 등급에 상한이 걸려야 한다."""
+    defs = models.list_metric_defs(conn)
+    sparse = score_partner(defs, _values(headcount_change_3m=0))
+    assert sparse.score == pytest.approx(100.0)
+    assert sparse.grade_cap is not None
+    assert sparse.grade != "A"
+    assert any("상한" in penalty for penalty in sparse.penalties)
+
+
+def test_avg_pay_is_derived_from_pension_notice():
+    from partners.collectors.insurance import _avg_pay
+
+    # 가입자 10명, 당월고지금액 360만원 → 1인당 보수월액 400만원 (요율 9%)
+    assert _avg_pay(3_600_000, 10) == 400.0
+    assert _avg_pay(None, 10) is None
+    assert _avg_pay(3_600_000, 0) is None
+
+
+def test_pension_withdrawal_is_critical(conn):
+    defs = models.list_metric_defs(conn)
+    result = score_partner(defs, _values(pension_status=2, headcount_change_3m=0))
+    assert result.grade == "E"
+    assert any("연금 사업장 탈퇴" in reason for reason in result.critical_reasons)
+
+
+def test_legal_event_is_critical(conn):
+    """부도·회생·경매는 소규모 부실의 결정적 신호라서 즉시위험이다."""
+    defs = models.list_metric_defs(conn)
+    result = score_partner(defs, _values(legal_count=1, debt_ratio=100))
+    assert result.grade == "E"
+    assert any("회생" in reason or "부도" in reason for reason in result.critical_reasons)
+
+
+def test_small_distress_partner_is_caught_without_financials(seeded):
+    """공시가 없는 소규모 부실 업체도 잡혀야 한다 — 이 대시보드의 존재 이유."""
+    defs = models.list_metric_defs(seeded)
+    period = models.known_periods(seeded, limit=1)[-1]
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "명진검사구")
+    values = models.values_as_of(seeded, partner["id"], period)
+    events = models.list_risk_events(seeded, partner["id"])
+
+    assert "debt_ratio" not in values
+    result = score_partner(defs, values, events)
+    assert result.grade == "E"
+    assert result.signal == "red"
+
+
+def test_doc_freshness_tracks_submission(conn):
+    partner_id = models.upsert_partner(conn, name="성진지그", biz_no="9218609012", profile="small_healthy")
+    periods = models.recent_periods(models.current_period(), 6)
+
+    # 제출 기록이 없으면 '제출 없음'으로 최저점이 된다.
+    run_collection(conn, periods, ["submission"])
+    empty = models.values_as_of(conn, partner_id, periods[-1])["doc_freshness"]
+    assert empty["text_value"] == "제출 없음"
+    defn = next(d for d in models.list_metric_defs(conn) if d["code"] == "doc_freshness")
+    assert score_metric(defn, empty["value"]) == 0.0
+
+    # 이번 달 제출하면 경과 0개월이 되어 만점이다.
+    models.add_submission(
+        conn, partner_id,
+        doc_type="표준재무제표증명",
+        submitted_on=f"{models.current_period()}-01",
+        period="2025 회계연도",
+    )
+    run_collection(conn, periods, ["submission"])
+    fresh = models.values_as_of(conn, partner_id, periods[-1])["doc_freshness"]
+    assert fresh["value"] == 0.0
+    assert score_metric(defn, fresh["value"]) == 100.0
+
+
+def test_credit_grades_load_from_csv(conn, tmp_path, monkeypatch):
+    csv_path = tmp_path / "credit.csv"
+    csv_path.write_text(
+        "biz_no,grade,evaluated_on\n9218609012,BBB,2026-06-30\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PARTNERS_CREDIT_CSV", str(csv_path))
+
+    partner_id = models.upsert_partner(conn, name="성진지그", biz_no="9218609012", profile="small_healthy")
+    run_collection(conn, models.recent_periods(models.current_period(), 12), ["credit"])
+    value = models.values_as_of(conn, partner_id, models.current_period())["credit_score"]
+    assert value["text_value"] == "신용 BBB"
+    assert value["value"] == 78.0
+    assert value["source"] == "credit"
+    run = next(row for row in models.list_runs(conn) if row["source"] == "credit")
+    assert run["mode"] == "live"
+
+
+def test_risk_csv_picks_up_legal_events(conn, tmp_path, monkeypatch):
+    csv_path = tmp_path / "risk.csv"
+    csv_path.write_text(
+        "biz_no,kind,title,occurred_on,severity,source,url\n"
+        "9218609012,부도,당좌거래정지,2026-08-14,,은행연합회,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PARTNERS_RISK_CSV", str(csv_path))
+
+    partner_id = models.upsert_partner(conn, name="성진지그", biz_no="9218609012", profile="small_healthy")
+    run_collection(conn, models.recent_periods("2026-09", 12), ["risk_list"])
+    events = models.list_risk_events(conn, partner_id)
+    assert events[0]["kind"] == "부도"
+    assert events[0]["severity"] == "critical"
+    assert models.values_as_of(conn, partner_id, "2026-09")["legal_count"]["value"] == 1.0
+
+
+def test_weak_coverage_filter_lists_small_partners(client):
+    client.post("/partners/seed", data={"months": "6"})
+    weak = client.get("/partners/?coverage=weak")
+    assert "성진지그".encode() in weak.data
+    assert "명진검사구".encode() in weak.data
+    # 공시가 있는 협력사는 빠진다.
+    assert "동성테크".encode() not in weak.data
+
+
+def test_detail_can_register_submission_and_manual_value(client):
+    client.post("/partners/seed", data={"months": "6"})
+    listing = client.get("/partners/api/partners.json").get_json()
+    target = next(item for item in listing["partners"] if item["name"] == "명진검사구")
+    assert "dart" not in target["sources"]
+
+    partner_id = client.get("/partners/?q=명진검사구").status_code and 10
+    response = client.post(
+        f"/partners/{partner_id}",
+        data={
+            "action": "add_submission", "doc_type": "표준재무제표증명",
+            "submitted_on": "2026-09-10", "period": "2025 회계연도",
+        },
+    )
+    assert response.status_code == 302
+    page = client.get(f"/partners/{partner_id}")
+    assert "2026-09-10".encode() in page.data
+
+    response = client.post(
+        f"/partners/{partner_id}",
+        data={
+            "action": "manual_value", "metric_code": "debt_ratio",
+            "value_period": "2026-09", "value": "180",
+        },
+    )
+    assert response.status_code == 302
+    payload = client.get("/partners/api/partners.json").get_json()
+    updated = next(item for item in payload["partners"] if item["name"] == "명진검사구")
+    assert updated["metrics"]["debt_ratio"]["value"] == 180.0
+    assert "manual" in updated["sources"]
+
+
 # --- 화면 -------------------------------------------------------------------
 
 
@@ -277,7 +453,7 @@ def test_dashboard_pages_render(client):
     assert detail.status_code == 200
 
     payload = client.get("/partners/api/partners.json").get_json()
-    assert len(payload["partners"]) == 8
+    assert len(payload["partners"]) == len(seed.SAMPLE_PARTNERS)
     assert {p["grade"] for p in payload["partners"]} & {"A", "B", "C", "D", "E"}
 
 

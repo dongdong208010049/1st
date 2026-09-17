@@ -2,16 +2,20 @@
 
 from .. import models
 from .base import Collector, CollectorError, CollectResult, Event, Reading
+from .credit import CreditCollector
 from .dart import DartCollector
-from .insurance import InsuranceCollector, fill_headcount_change
+from .insurance import InsuranceCollector, fill_changes
 from .nts import NtsCollector
 from .risk_list import RiskListCollector
+from .submission import SubmissionCollector
 
 COLLECTORS: tuple[Collector, ...] = (
     DartCollector(),
+    CreditCollector(),
     InsuranceCollector(),
     NtsCollector(),
     RiskListCollector(),
+    SubmissionCollector(),
 )
 
 __all__ = [
@@ -53,7 +57,7 @@ def run_collection(conn, periods: list[str], sources: list[str] | None = None) -
 
         for partner in partners:
             try:
-                result = collector.collect(partner, periods)
+                result = collector.collect(partner, periods, conn)
             except CollectorError as exc:
                 failures.append(str(exc))
                 continue
@@ -70,14 +74,17 @@ def run_collection(conn, periods: list[str], sources: list[str] | None = None) -
                 )
                 records += 1
 
-            # 실 API가 당월 인원만 주는 경우, 저장된 시계열로 3개월 증감률을 보완한다.
+            # 실 API가 당월 값만 주는 경우, 저장된 시계열로 증감 지표를 보완한다.
             if collector.source == "insurance":
-                history = [
-                    (row["period"], row["value"])
-                    for row in models.value_history(conn, partner["id"], "headcount")
-                    if row["value"] is not None
-                ]
-                for reading in fill_headcount_change(history):
+                history = {
+                    code: [
+                        (row["period"], row["value"])
+                        for row in models.value_history(conn, partner["id"], code, limit=36)
+                        if row["value"] is not None
+                    ]
+                    for code in ("headcount", "avg_pay")
+                }
+                for reading in fill_changes(history):
                     models.put_metric_value(
                         conn, partner["id"], reading.code, reading.period,
                         reading.value, reading.text, collector.source,

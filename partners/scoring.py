@@ -26,12 +26,21 @@ EVENT_PENALTY = 3.0
 EVENT_PENALTY_CAP = 15.0
 EVENT_WINDOW_DAYS = 365
 
+# 자료 충족률이 낮으면 등급에 상한을 둔다.
+# 소규모(비외감) 협력사는 재무 공시가 없어서 '남은 지표만 좋으면 A'가 되기 쉽다.
+# 자료가 없는 것은 안전하다는 뜻이 아니므로, 모르는 만큼 등급을 눌러 둔다.
+COVERAGE_CAPS = ((0.35, "C"), (0.55, "B"))
+GRADE_CEILING = {"C": SIGNAL_WARN - 0.1, "B": 84.9}
+
 # 즉시위험 규칙: (지표코드, 비교, 기준값, 사유)
+# 소규모 협력사는 재무제표보다 아래 신호가 먼저·확실하게 나타난다.
 CRITICAL_RULES = (
     ("biz_status", ">=", 2.0, "국세청 사업자상태: 폐업"),
     ("biz_status", "==", 1.0, "국세청 사업자상태: 휴업"),
+    ("pension_status", ">=", 2.0, "국민연금 사업장 탈퇴(근로자 0명·폐업 직전)"),
     ("equity_impairment", ">=", 100.0, "완전자본잠식"),
     ("wage_arrears_count", ">=", 1.0, "고용노동부 임금체불 사업주 명단 등재"),
+    ("legal_count", ">=", 1.0, "회생·파산·부도·경매 등 법적 사건 발생"),
     ("headcount_change_3m", "<=", -30.0, "3개월 인원 30% 이상 급감"),
 )
 
@@ -55,6 +64,7 @@ class MetricScore:
     weight: float
     period: str | None
     collected_at: str | None
+    source: str | None = None
     stale: bool = False
 
     @property
@@ -89,8 +99,14 @@ class PartnerScore:
     critical_reasons: list[str] = field(default_factory=list)
     penalties: list[str] = field(default_factory=list)
     coverage: float = 0.0
+    grade_cap: str | None = None
     last_collected_at: str | None = None
     stale: bool = False
+
+    @property
+    def sources(self) -> list[str]:
+        """실제로 값이 들어온 자료원 목록. 소규모 협력사의 커버리지 확인용."""
+        return sorted({m.source for m in self.metrics if m.source and m.value is not None})
 
     @property
     def by_category(self) -> dict[str, list[MetricScore]]:
@@ -194,6 +210,7 @@ def score_partner(metric_defs, values: dict, events=(), today: date | None = Non
                 weight=weight,
                 period=row["period"] if row else None,
                 collected_at=collected_at,
+                source=row["source"] if row else None,
                 stale=stale,
             )
         )
@@ -228,6 +245,19 @@ def score_partner(metric_defs, values: dict, events=(), today: date | None = Non
             penalties.append(f"최근 1년 리스크 이벤트 {len(recent_events)}건 −{deduction:g}")
         base = max(0.0, min(100.0, base))
 
+    # 자료가 적게 모인 협력사는 등급 상한을 적용한다.
+    grade_cap = None
+    effective = base
+    for threshold, cap in COVERAGE_CAPS:
+        if coverage < threshold:
+            grade_cap = cap
+            break
+    if grade_cap and base is not None:
+        ceiling = GRADE_CEILING[grade_cap]
+        if base > ceiling:
+            effective = ceiling
+            penalties.append(f"자료 충족률 {coverage * 100:.0f}% → 등급 상한 {grade_cap}")
+
     critical_reasons = []
     for code, comparator, threshold, reason in CRITICAL_RULES:
         row = values.get(code)
@@ -251,17 +281,19 @@ def score_partner(metric_defs, values: dict, events=(), today: date | None = Non
             critical_reasons=critical_reasons,
             penalties=penalties,
             coverage=coverage,
+            grade_cap=grade_cap,
             last_collected_at=last_collected_at,
             stale=overall_stale,
         )
 
     return PartnerScore(
         score=base,
-        grade=grade_of(base),
-        signal=signal_of(base),
+        grade=grade_of(effective),
+        signal=signal_of(effective),
         metrics=metrics,
         penalties=penalties,
         coverage=coverage,
+        grade_cap=grade_cap,
         last_collected_at=last_collected_at,
         stale=overall_stale,
     )

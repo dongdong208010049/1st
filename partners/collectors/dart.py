@@ -38,7 +38,7 @@ class DartCollector(Collector):
         "debt_ratio", "current_ratio", "equity_impairment",
     )
 
-    def collect_live(self, partner, periods: list[str]) -> CollectResult:
+    def collect_live(self, partner, periods: list[str], conn=None) -> CollectResult:
         import os
 
         corp_code = partner["dart_corp_code"]
@@ -76,9 +76,12 @@ class DartCollector(Collector):
             readings.extend(_derive(period, accounts, previous))
         return CollectResult(readings=readings)
 
-    def collect_mock(self, partner, periods: list[str]) -> CollectResult:
+    def collect_mock(self, partner, periods: list[str], conn=None) -> CollectResult:
         rng = random.Random(f"dart:{partner['biz_no']}")
         profile = partner["profile"] or "healthy"
+        if profile.startswith("small"):
+            # 외부감사 대상이 아니면 DART에 재무가 없다. 빈 결과가 정상이다.
+            return CollectResult()
         revenue = rng.uniform(40, 900)  # 억원
         debt_ratio = {"healthy": rng.uniform(45, 110), "watch": rng.uniform(170, 240)}.get(
             profile, rng.uniform(330, 480)

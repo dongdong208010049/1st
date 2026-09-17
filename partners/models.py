@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS risk_events (
     UNIQUE (partner_id, kind, title, occurred_on)
 );
 
+CREATE TABLE IF NOT EXISTS submissions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner_id   INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+    doc_type     TEXT NOT NULL,            -- 표준재무제표증명 / 납세증명서 / 4대보험 완납증명 ...
+    period       TEXT,                     -- 대상 기간 메모 (예: 2025 회계연도)
+    submitted_on TEXT NOT NULL,            -- 'YYYY-MM-DD'
+    note         TEXT,
+    recorded_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collection_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source      TEXT NOT NULL,
@@ -80,6 +90,7 @@ CREATE TABLE IF NOT EXISTS collection_runs (
 
 CREATE INDEX IF NOT EXISTS idx_values_partner ON metric_values(partner_id, period);
 CREATE INDEX IF NOT EXISTS idx_events_partner ON risk_events(partner_id, occurred_on);
+CREATE INDEX IF NOT EXISTS idx_submissions_partner ON submissions(partner_id, submitted_on);
 """
 
 
@@ -304,6 +315,50 @@ def list_risk_events(conn: sqlite3.Connection, partner_id: int | None = None, li
         "SELECT * FROM risk_events WHERE partner_id = ? ORDER BY occurred_on DESC LIMIT ?",
         (partner_id, limit),
     ).fetchall()
+
+
+# 소규모(비외감) 협력사에서 재무를 확인할 수 있는 정기 징구 자료.
+# 표준재무제표증명·부가세 과세표준증명은 국세청 발급본이라 협력사가 꾸며낼 수 없다.
+REQUIRED_DOC_TYPES = (
+    "표준재무제표증명",
+    "부가세 과세표준증명",
+    "납세증명서",
+    "4대보험 완납증명",
+)
+OPTIONAL_DOC_TYPES = ("신용평가서", "기타")
+
+
+def add_submission(conn: sqlite3.Connection, partner_id: int, **fields) -> int:
+    cursor = conn.execute(
+        "INSERT INTO submissions (partner_id, doc_type, period, submitted_on, note, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            partner_id,
+            fields["doc_type"],
+            fields.get("period"),
+            fields["submitted_on"],
+            fields.get("note"),
+            now_iso(),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def list_submissions(conn: sqlite3.Connection, partner_id: int, limit: int = 30) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM submissions WHERE partner_id = ? ORDER BY submitted_on DESC LIMIT ?",
+        (partner_id, limit),
+    ).fetchall()
+
+
+def latest_submission(conn: sqlite3.Connection, partner_id: int, doc_types=REQUIRED_DOC_TYPES) -> sqlite3.Row | None:
+    placeholders = ", ".join("?" for _ in doc_types)
+    return conn.execute(
+        f"SELECT * FROM submissions WHERE partner_id = ? AND doc_type IN ({placeholders}) "
+        "ORDER BY submitted_on DESC LIMIT 1",
+        (partner_id, *doc_types),
+    ).fetchone()
 
 
 def start_run(conn: sqlite3.Connection, source: str, mode: str) -> int:

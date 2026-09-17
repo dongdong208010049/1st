@@ -55,18 +55,18 @@ class Collector:
         """실 API 호출에 필요한 키가 모두 있는지."""
         return all(os.environ.get(key) for key in self.env_keys)
 
-    def collect(self, partner, periods: list[str]) -> CollectResult:
+    def collect(self, partner, periods: list[str], conn=None) -> CollectResult:
         if self.available():
-            return self.collect_live(partner, periods)
-        return self.collect_mock(partner, periods)
+            return self.collect_live(partner, periods, conn)
+        return self.collect_mock(partner, periods, conn)
 
     def mode(self) -> str:
         return "live" if self.available() else "mock"
 
-    def collect_live(self, partner, periods: list[str]) -> CollectResult:
+    def collect_live(self, partner, periods: list[str], conn=None) -> CollectResult:
         raise NotImplementedError
 
-    def collect_mock(self, partner, periods: list[str]) -> CollectResult:
+    def collect_mock(self, partner, periods: list[str], conn=None) -> CollectResult:
         raise NotImplementedError
 
 

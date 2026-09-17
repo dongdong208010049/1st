@@ -30,9 +30,17 @@
         <div class="small muted" style="margin-top:4px">자동 감점: {{ score.penalties|join(' · ') }}</div>
       {% endif %}
       <div class="small muted" style="margin-top:4px">
-        지표 충족률 {{ '%.0f'|format(score.coverage * 100) }}% ·
-        최종 수집 {{ score.last_collected_at[:16] if score.last_collected_at else '없음' }}
+        지표 충족률 {{ '%.0f'|format(score.coverage * 100) }}%
+        {%- if score.grade_cap %} <span class="tag critical">자료 부족 → 등급 상한 {{ score.grade_cap }}</span>{% endif %}
+        · 자료원 {{ score.sources|join(', ') if score.sources else '없음' }}
+        · 최종 수집 {{ score.last_collected_at[:16] if score.last_collected_at else '없음' }}
       </div>
+      {% if 'dart' not in score.sources %}
+        <div class="small" style="margin-top:6px; color:#b45309">
+          공시 재무가 없는 협력사입니다(외부감사 대상 아님).
+          연금 인원·신고소득, 신용등급, 제출자료, 법적 사건으로 감시합니다.
+        </div>
+      {% endif %}
     </div>
     <div>
       <div class="small muted">종합점수 12개월</div>
@@ -84,6 +92,7 @@
 <div class="card">
   <h2>기본정보</h2>
   <form method="post" class="filters">
+    <input type="hidden" name="action" value="update_partner">
     <input type="text" name="name" value="{{ partner.name }}" placeholder="협력사명" required>
     <select name="category_code">
       <option value="">미분류</option>
@@ -96,6 +105,54 @@
     <input type="text" name="manager" value="{{ partner.manager or '' }}" placeholder="담당자" style="width:100px">
     <input type="text" name="dart_corp_code" value="{{ partner.dart_corp_code or '' }}" placeholder="DART 고유번호" style="width:130px">
     <button type="submit">저장</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>제출자료 징구</h2>
+  <p class="small muted">
+    공시 재무가 없는 협력사는 국세청 발급 증명을 정기적으로 받아 확인합니다.
+    제출이 늦어지는 것 자체가 신호이므로 '자료 제출 경과' 지표로 채점에 반영됩니다.
+  </p>
+  {% for item in submissions %}
+    <div class="kv">
+      <span><span class="tag">{{ item.doc_type }}</span> {{ item.period or '' }} {{ item.note or '' }}</span>
+      <span class="small muted nowrap">{{ item.submitted_on }}</span>
+    </div>
+  {% else %}
+    <p class="small" style="color:#b91c1c">제출 기록이 없습니다. 징구 대상입니다.</p>
+  {% endfor %}
+  <form method="post" class="filters" style="margin-top:12px">
+    <input type="hidden" name="action" value="add_submission">
+    <select name="doc_type">
+      {% for item in doc_types %}<option value="{{ item }}">{{ item }}</option>{% endfor %}
+    </select>
+    <input type="date" name="submitted_on" required>
+    <input type="text" name="period" placeholder="대상 기간 (예: 2025 회계연도)" style="width:190px">
+    <input type="text" name="note" placeholder="비고" style="width:140px">
+    <button type="submit">제출 등록</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>지표 직접 입력</h2>
+  <p class="small muted">
+    제출받은 표준재무제표증명·부가세 과세표준증명의 수치를 여기에 입력하면
+    DART가 있는 협력사와 같은 기준으로 채점됩니다(자료원 <code>manual</code>).
+  </p>
+  <form method="post" class="filters">
+    <input type="hidden" name="action" value="manual_value">
+    <select name="metric_code">
+      {% for defn in metric_defs %}
+        <option value="{{ defn.code }}">{{ defn.category }} · {{ defn.label }}{% if defn.unit %} ({{ defn.unit }}){% endif %}</option>
+      {% endfor %}
+    </select>
+    <select name="value_period">
+      {% for item in recent_period_options %}<option value="{{ item }}">{{ item }}</option>{% endfor %}
+    </select>
+    <input type="number" step="any" name="value" placeholder="값" required style="width:110px">
+    <input type="text" name="value_text" placeholder="표시 문구(선택)" style="width:150px">
+    <button type="submit">입력</button>
   </form>
 </div>
 
