@@ -1,0 +1,94 @@
+{% extends "partners/base.html" %}
+{% block title %}{{ partner.name }} · 협력사 모니터링{% endblock %}
+{% block content %}
+
+<p class="small"><a href="{{ url_for('partners.index') }}">← 리스트</a></p>
+
+<div class="card">
+  <div style="display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap">
+    <div style="flex:1 1 320px">
+      <h2 style="font-size:1.2rem; margin:0 0 4px">
+        <span class="dot {{ score.signal }}"></span>{{ partner.name }}
+        <span class="grade g-{{ score.grade }}">{{ score.grade }}</span>
+        <span class="muted small">{{ '%.1f'|format(score.score) if score.score is not none else '자료 부족' }}점</span>
+      </h2>
+      <p class="small muted" style="margin:0">
+        사업자번호 {{ partner.biz_no }}{% if partner.corp_no %} · 법인번호 {{ partner.corp_no }}{% endif %}
+        · {{ partner.industry or '업종 미지정' }} · {{ partner.tier or '구분 없음' }} · 담당 {{ partner.manager or '미지정' }}
+      </p>
+      {% if score.critical_reasons %}
+        <div class="reasons" style="font-size:0.85rem; margin-top:8px">
+          <strong>즉시위험</strong> — {{ score.critical_reasons|join(' / ') }}
+        </div>
+      {% endif %}
+      {% if score.penalties %}
+        <div class="small muted" style="margin-top:4px">자동 감점: {{ score.penalties|join(' · ') }}</div>
+      {% endif %}
+      <div class="small muted" style="margin-top:4px">
+        지표 충족률 {{ '%.0f'|format(score.coverage * 100) }}% ·
+        최종 수집 {{ score.last_collected_at[:16] if score.last_collected_at else '없음' }}
+      </div>
+    </div>
+    <div>
+      <div class="small muted">종합점수 12개월</div>
+      {% if trend_points %}
+        <svg width="240" height="48" viewBox="0 0 240 48" aria-hidden="true">
+          <polyline points="{{ trend_points }}" fill="none" stroke="#2b6cb0" stroke-width="1.8"/>
+        </svg>
+      {% else %}
+        <p class="small muted">시계열 자료가 부족합니다.</p>
+      {% endif %}
+      <form method="get" class="filters" style="margin-top:6px">
+        <select name="period">
+          {% for item in periods %}<option value="{{ item }}" {% if period == item %}selected{% endif %}>{{ item }} 기준</option>{% endfor %}
+        </select>
+        <button class="ghost" type="submit">기준 변경</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+  {% for category in categories %}
+  <div class="card">
+    <h2><span class="dot {{ score.category_signal(category) }}"></span>{{ category }}</h2>
+    {% for item in histories if item.metric.category == category %}
+      <div class="kv">
+        <span>
+          <span class="dot {{ item.metric.signal }}"></span>{{ item.metric.label }}
+          {% if item.metric.weight %}<span class="tag">가중 {{ '%g'|format(item.metric.weight) }}</span>{% endif %}
+        </span>
+        <span class="nowrap">
+          {% if item.points %}
+            <svg width="60" height="18" viewBox="0 0 60 18" aria-hidden="true" style="margin-right:6px; vertical-align:middle">
+              <polyline points="{{ item.points }}" fill="none" stroke="#9aa3ae" stroke-width="1.4"/>
+            </svg>
+          {% endif %}
+          <strong>{{ item.metric.display }}</strong>
+          {% if item.metric.score is not none %}<span class="small muted">({{ '%.0f'|format(item.metric.score) }}점)</span>{% endif %}
+          {% if item.metric.stale %}<span class="tag">노후</span>{% endif %}
+        </span>
+      </div>
+    {% else %}
+      <p class="small muted">이 카테고리에 활성 지표가 없습니다.</p>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h2>리스크 이벤트</h2>
+  {% for event in events %}
+    <div class="kv">
+      <span>
+        <span class="tag {{ 'critical' if event.severity == 'critical' else '' }}">{{ event.kind }}</span>
+        {% if event.url %}<a href="{{ event.url }}" rel="noreferrer noopener">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}
+      </span>
+      <span class="small muted nowrap">{{ event.occurred_on }}{% if event.source %} · {{ event.source }}{% endif %}</span>
+    </div>
+  {% else %}
+    <p class="small muted">최근 확인된 이벤트가 없습니다.</p>
+  {% endfor %}
+</div>
+
+{% endblock %}

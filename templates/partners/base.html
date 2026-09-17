@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}협력사 종합 모니터링{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #fff;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --brand: #2b6cb0;
+      --ok: #15803d;
+      --warn: #b45309;
+      --bad: #b91c1c;
+      --ok-bg: #e8f5ee;
+      --warn-bg: #fdf3e3;
+      --bad-bg: #fdeceb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    a { color: var(--brand); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.topbar {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 24px;
+      display: flex;
+      align-items: baseline;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    header.topbar h1 { font-size: 1.05rem; margin: 0; }
+    header.topbar nav { display: flex; gap: 14px; font-size: 0.9rem; }
+    main { padding: 20px 24px 48px; max-width: 1480px; margin: 0 auto; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    .card > h2 { font-size: 0.95rem; margin: 0 0 12px; }
+    .flash {
+      background: #eef4fb;
+      border: 1px solid #cfe0f2;
+      color: #1c4e80;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      font-size: 0.88rem;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    thead th {
+      position: sticky; top: 0; background: #fafbfc; z-index: 1;
+      font-size: 0.78rem; color: var(--muted); font-weight: 600;
+      text-transform: none; white-space: nowrap;
+    }
+    tbody tr:hover { background: #fbfcfe; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+    .dot.green { background: var(--ok); }
+    .dot.amber { background: var(--warn); }
+    .dot.red { background: var(--bad); }
+    .dot.none { background: #cbd5e1; }
+    .grade {
+      display: inline-block; min-width: 22px; text-align: center;
+      font-weight: 700; font-size: 0.8rem; padding: 2px 6px; border-radius: 5px;
+    }
+    .grade.g-A, .grade.g-B { background: var(--ok-bg); color: var(--ok); }
+    .grade.g-C { background: var(--warn-bg); color: var(--warn); }
+    .grade.g-D, .grade.g-E { background: var(--bad-bg); color: var(--bad); }
+    .grade.g- { background: #f1f3f5; color: var(--muted); }
+    .muted { color: var(--muted); }
+    .small { font-size: 0.8rem; }
+    .nowrap { white-space: nowrap; }
+    .stale { color: #9aa3ae; }
+    .tag {
+      display: inline-block; font-size: 0.72rem; padding: 1px 6px; border-radius: 10px;
+      background: #f1f3f5; color: var(--muted); margin-left: 4px;
+    }
+    .tag.critical { background: var(--bad-bg); color: var(--bad); }
+    .chips { display: flex; gap: 10px; flex-wrap: wrap; }
+    .chip {
+      background: #fff; border: 1px solid var(--line); border-radius: 8px;
+      padding: 10px 14px; min-width: 104px;
+    }
+    .chip .n { font-size: 1.3rem; font-weight: 700; display: block; }
+    .chip.red .n { color: var(--bad); }
+    .chip.amber .n { color: var(--warn); }
+    .chip.green .n { color: var(--ok); }
+    form.filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    input[type=text], input[type=number], select {
+      border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+      font: inherit; background: #fff; color: inherit;
+    }
+    button {
+      background: var(--brand); color: #fff; border: none; padding: 7px 14px;
+      border-radius: 6px; cursor: pointer; font: inherit;
+    }
+    button:hover { background: #234e8c; }
+    button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+    button.ghost:hover { background: #f3f4f6; }
+    .reasons { color: var(--bad); font-size: 0.78rem; margin-top: 2px; }
+    .spark { display: block; }
+    .delta.up { color: var(--ok); }
+    .delta.down { color: var(--bad); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+    .kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+    .kv:last-child { border-bottom: none; }
+    .table-wrap { overflow-x: auto; }
+    @media (max-width: 720px) {
+      main { padding: 14px 16px 40px; }
+      header.topbar { padding: 12px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <h1>협력사 종합 모니터링</h1>
+    <nav>
+      <a href="{{ url_for('partners.index') }}">리스트</a>
+      <a href="{{ url_for('partners.settings') }}">지표·수집 설정</a>
+      <a href="{{ url_for('index') }}">HWP 변환기</a>
+    </nav>
+  </header>
+  <main>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

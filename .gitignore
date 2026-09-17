@@ -9,3 +9,7 @@ venv/
 # 포터블(설치 없는) 실행용 다운로드 산물 - 사용자가 로컬에서 직접 내려받는 것들
 portable/python-embed/
 portable/LibreOfficePortable/
+
+# 대시보드 로컬 SQLite
+instance/
+*.db

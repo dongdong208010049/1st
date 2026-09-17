@@ -1,0 +1,160 @@
+{% extends "partners/base.html" %}
+{% block content %}
+
+<div class="chips" style="margin-bottom:16px">
+  <div class="chip"><span class="n">{{ summary.total }}</span><span class="small muted">전체 협력사</span></div>
+  <div class="chip red"><span class="n">{{ summary.red }}</span><span class="small muted">경고 🔴</span></div>
+  <div class="chip amber"><span class="n">{{ summary.amber }}</span><span class="small muted">주의 🟡</span></div>
+  <div class="chip green"><span class="n">{{ summary.green }}</span><span class="small muted">정상 🟢</span></div>
+  <div class="chip"><span class="n">{{ summary.critical }}</span><span class="small muted">즉시위험 사유</span></div>
+  <div class="chip"><span class="n">{{ summary.stale }}</span><span class="small muted">자료 노후(90일+)</span></div>
+</div>
+
+<div class="card">
+  <form class="filters" method="get" action="{{ url_for('partners.index') }}">
+    <input type="text" name="q" value="{{ filters.q }}" placeholder="협력사명·사업자번호·업종">
+    <select name="signal">
+      <option value="">신호등 전체</option>
+      {% for key in ['red', 'amber', 'green', 'none'] %}
+        <option value="{{ key }}" {% if filters.signal == key %}selected{% endif %}>{{ signal_labels[key] }}</option>
+      {% endfor %}
+    </select>
+    <select name="grade">
+      <option value="">등급 전체</option>
+      {% for key in ['A', 'B', 'C', 'D', 'E'] %}
+        <option value="{{ key }}" {% if filters.grade == key %}selected{% endif %}>{{ key }}등급</option>
+      {% endfor %}
+    </select>
+    <select name="manager">
+      <option value="">담당자 전체</option>
+      {% for name in managers %}
+        <option value="{{ name }}" {% if filters.manager == name %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <select name="order">
+      <option value="risk" {% if filters.order == 'risk' %}selected{% endif %}>위험 우선</option>
+      <option value="score_desc" {% if filters.order == 'score_desc' %}selected{% endif %}>점수 높은 순</option>
+      <option value="name" {% if filters.order == 'name' %}selected{% endif %}>협력사명</option>
+      <option value="stale" {% if filters.order == 'stale' %}selected{% endif %}>오래된 자료 순</option>
+    </select>
+    <select name="period">
+      {% for item in periods %}
+        <option value="{{ item }}" {% if period == item %}selected{% endif %}>{{ item }} 기준</option>
+      {% endfor %}
+    </select>
+    <button type="submit">조회</button>
+    <a class="small muted" href="{{ url_for('partners.index') }}">초기화</a>
+  </form>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>종합</th>
+        <th>협력사</th>
+        {% for category in categories %}<th>{{ category }}</th>{% endfor %}
+        <th>추세 6개월</th>
+        <th>갱신</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="nowrap">
+          <span class="dot {{ row.score.signal }}"></span>
+          <span class="grade g-{{ row.score.grade }}">{{ row.score.grade }}</span>
+          <span class="small muted">{{ '%.0f'|format(row.score.score) if row.score.score is not none else '—' }}</span>
+        </td>
+        <td>
+          <a href="{{ url_for('partners.detail', partner_id=row.partner.id) }}"><strong>{{ row.partner.name }}</strong></a>
+          {% if row.partner.tier %}<span class="tag">{{ row.partner.tier }}</span>{% endif %}
+          <div class="small muted">{{ row.partner.biz_no }} · {{ row.partner.industry or '-' }} · {{ row.partner.manager or '담당 미지정' }}</div>
+          {% if row.score.critical_reasons %}
+            <div class="reasons">
+              즉시위험 · {{ row.score.critical_reasons[:2]|join(' / ') }}
+              {%- if row.score.critical_reasons|length > 2 %} 외 {{ row.score.critical_reasons|length - 2 }}건{% endif %}
+            </div>
+          {% endif %}
+        </td>
+        {% for category in categories %}
+        {# 첫 컬럼(기업상태)은 짧은 값이라 줄바꿈하지 않는다. #}
+        <td {% if loop.first %}class="nowrap"{% endif %}>
+          <span class="dot {{ row.score.category_signal(category) }}"></span>
+          <span class="small">{{ row.score.category_summary(category) }}</span>
+        </td>
+        {% endfor %}
+        <td class="nowrap">
+          {% if row.trend_points %}
+            <svg class="spark" width="72" height="22" viewBox="0 0 72 22" aria-hidden="true">
+              <polyline points="{{ row.trend_points }}" fill="none" stroke="{{ '#b91c1c' if row.score.signal == 'red' else ('#b45309' if row.score.signal == 'amber' else '#15803d') }}" stroke-width="1.6"/>
+            </svg>
+          {% else %}
+            <span class="small muted">—</span>
+          {% endif %}
+          {% if row.trend_delta is not none %}
+            {% if row.trend_delta|abs < 0.05 %}
+              <span class="small muted">±0</span>
+            {% else %}
+              <span class="small delta {{ 'up' if row.trend_delta > 0 else 'down' }}">
+                {{ '▲' if row.trend_delta > 0 else '▼' }}{{ '%.1f'|format(row.trend_delta|abs) }}
+              </span>
+            {% endif %}
+          {% endif %}
+        </td>
+        <td class="small nowrap {{ 'stale' if row.score.stale else 'muted' }}">
+          {{ row.score.last_collected_at[:10] if row.score.last_collected_at else '수집 없음' }}
+          {% if row.score.stale %}<span class="tag">노후</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr><td colspan="{{ 4 + categories|length }}" class="muted" style="padding:28px; text-align:center">
+        조건에 맞는 협력사가 없습니다.
+      </td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>수집 상태</h2>
+  <div class="grid">
+    <div>
+      <form method="post" action="{{ url_for('partners.collect') }}">
+        <input type="hidden" name="next" value="{{ url_for('partners.index') }}">
+        {% for collector in collectors %}
+          <label class="small" style="display:block">
+            <input type="checkbox" name="sources" value="{{ collector.source }}" checked>
+            {{ collector.label }}
+            <span class="tag {{ 'critical' if collector.mode == 'mock' else '' }}">{{ '실 API' if collector.mode == 'live' else '목업' }}</span>
+          </label>
+        {% endfor %}
+        <label class="small" style="display:block; margin:8px 0">
+          최근 <input type="number" name="months" value="12" min="1" max="36" style="width:64px"> 개월
+        </label>
+        <button type="submit">지금 수집</button>
+      </form>
+      {% if not rows and not summary.total %}
+        <form method="post" action="{{ url_for('partners.seed') }}" style="margin-top:8px">
+          <button class="ghost" type="submit">샘플 데이터로 시작</button>
+        </form>
+      {% endif %}
+    </div>
+    <div>
+      <h2 class="small muted">최근 실행</h2>
+      {% for run in runs %}
+        <div class="kv small">
+          <span>{{ run.source }} <span class="tag">{{ run.mode }}</span></span>
+          <span class="{{ 'stale' if run.status != 'ok' else 'muted' }}">{{ run.records }}건 · {{ run.status }} · {{ run.started_at[:16] }}</span>
+        </div>
+      {% else %}
+        <p class="small muted">실행 기록이 없습니다.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}

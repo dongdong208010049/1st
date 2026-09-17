@@ -1,0 +1,119 @@
+{% extends "partners/base.html" %}
+{% block title %}지표·수집 설정 · 협력사 모니터링{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>지표 정의 (활성 가중치 합계 {{ '%g'|format(total_weight) }})</h2>
+  <p class="small muted">
+    점수는 <strong>good → 100점, bad → 0점</strong> 선형 보간이고, 종합점수는 값이 있는 지표의 가중 평균입니다.
+    가중치 0은 참고용(점수 미반영) 항목입니다.
+  </p>
+  <form method="post">
+    <input type="hidden" name="action" value="update">
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>사용</th><th>카테고리</th><th>지표</th><th>방향</th>
+          <th>good(100점)</th><th>bad(0점)</th><th>가중치</th><th>소스</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for defn in defs %}
+        <tr>
+          <td><input type="checkbox" name="active__{{ defn.code }}" {% if defn.active %}checked{% endif %}></td>
+          <td class="small">{{ defn.category }}</td>
+          <td>{{ defn.label }} <span class="small muted">{{ defn.code }}{% if defn.unit %} ({{ defn.unit }}){% endif %}</span></td>
+          <td>
+            <select name="direction__{{ defn.code }}">
+              {% for key, text in [('higher_better', '높을수록 좋음'), ('lower_better', '낮을수록 좋음'), ('info', '참고용')] %}
+                <option value="{{ key }}" {% if defn.direction == key %}selected{% endif %}>{{ text }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td><input type="number" step="any" name="good__{{ defn.code }}" value="{{ defn.good_value if defn.good_value is not none else '' }}" style="width:88px"></td>
+          <td><input type="number" step="any" name="bad__{{ defn.code }}" value="{{ defn.bad_value if defn.bad_value is not none else '' }}" style="width:88px"></td>
+          <td><input type="number" step="any" name="weight__{{ defn.code }}" value="{{ '%g'|format(defn.weight) }}" style="width:70px"></td>
+          <td class="small muted">{{ defn.source or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <button type="submit" style="margin-top:12px">설정 저장</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>지표 추가</h2>
+  <p class="small muted">항목을 추가하면 리스트의 해당 카테고리 컬럼과 상세 화면에 자동으로 나타납니다.</p>
+  <form method="post" class="filters">
+    <input type="hidden" name="action" value="add">
+    <input type="text" name="code" placeholder="지표 코드 (예: esg_score)" required>
+    <input type="text" name="label" placeholder="표시명 (예: ESG 평가점수)" required>
+    <select name="category">
+      {% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
+      <option value="기타">기타</option>
+    </select>
+    <input type="text" name="unit" placeholder="단위" style="width:70px">
+    <select name="direction">
+      <option value="higher_better">높을수록 좋음</option>
+      <option value="lower_better">낮을수록 좋음</option>
+      <option value="info">참고용</option>
+    </select>
+    <input type="number" step="any" name="good_value" placeholder="good" style="width:80px">
+    <input type="number" step="any" name="bad_value" placeholder="bad" style="width:80px">
+    <input type="number" step="any" name="weight" placeholder="가중치" style="width:80px">
+    <input type="text" name="source" placeholder="소스 키" style="width:100px">
+    <button type="submit">추가</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>수집기</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>소스</th><th>모드</th><th>필요 키</th><th>채우는 지표</th></tr></thead>
+    <tbody>
+      {% for collector in collectors %}
+      <tr>
+        <td>{{ collector.label }} <span class="small muted">{{ collector.source }}</span></td>
+        <td><span class="tag {{ 'critical' if collector.mode == 'mock' else '' }}">{{ '실 API' if collector.mode == 'live' else '목업' }}</span></td>
+        <td class="small muted">{{ collector.env_keys|join(', ') or 'CSV 적재' }}</td>
+        <td class="small muted">{{ collector.metric_codes|join(', ') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <form method="post" action="{{ url_for('partners.collect') }}" class="filters" style="margin-top:12px">
+    <input type="hidden" name="next" value="{{ url_for('partners.settings') }}">
+    최근 <input type="number" name="months" value="12" min="1" max="36" style="width:64px"> 개월
+    <button type="submit">전체 수집 실행</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>수집 로그</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>시각</th><th>소스</th><th>모드</th><th>상태</th><th>적재</th><th>메시지</th></tr></thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td class="small nowrap">{{ run.started_at[:16] }}</td>
+        <td class="small">{{ run.source }}</td>
+        <td class="small">{{ run.mode }}</td>
+        <td class="small {{ 'stale' if run.status != 'ok' else '' }}">{{ run.status }}</td>
+        <td class="small">{{ run.records }}</td>
+        <td class="small muted">{{ run.message or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="small muted">기록 없음</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% endblock %}
