@@ -181,6 +181,28 @@
     }
     .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .card-head h2 { margin: 0; }
+    /* ── 지도 중앙, 현황이 둘러싸는 배치 ───────────────── */
+    .ring {
+      display: grid; gap: 14px; align-items: start; margin-bottom: 14px;
+      grid-template-columns: minmax(210px, 250px) minmax(420px, 1fr) minmax(230px, 290px);
+    }
+    .ring-center { display: flex; flex-direction: column; align-items: center; }
+    .ring-center .map-wrap { justify-content: center; }
+    @media (max-width: 1240px) {
+      .ring { grid-template-columns: 1fr 1fr; }
+      .ring-center { grid-column: 1 / -1; order: -1; }
+    }
+    @media (max-width: 780px) { .ring { grid-template-columns: 1fr; } }
+
+    .stat-list { display: flex; flex-direction: column; gap: 2px; }
+    .stat {
+      display: flex; align-items: center; gap: 7px; padding: 6px 8px;
+      border-radius: 8px; color: var(--ink-2); font-size: 0.85rem;
+    }
+    a.stat:hover { background: var(--surface-2); text-decoration: none; }
+    .stat-k { flex: 1 1 auto; }
+    .stat-n { font-size: 1.05rem; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
     .split { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 14px; align-items: start; }
     @media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
@@ -303,21 +325,55 @@
       }
     }
     .alert { display: inline-block; }
+    /* ── 픽토그램 셀 & 툴팁 ─────────────────────────────── */
+    .ico { flex: 0 0 auto; color: var(--muted); vertical-align: -2px; }
+    .cell {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 0.82rem; color: var(--ink-2); cursor: help; max-width: 100%;
+    }
+    .cell-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell:hover, .cell:focus-visible { color: var(--ink); outline: none; }
+    .cell:hover .ico, .cell:focus-visible .ico { color: var(--ink-2); }
+
+    [data-tip] { position: relative; }
+    [data-tip]:hover::after, [data-tip]:focus-visible::after {
+      content: attr(data-tip);
+      position: absolute; left: 0; top: calc(100% + 6px); z-index: 40;
+      white-space: pre-line; width: max-content; max-width: 320px;
+      background: var(--ink); color: var(--plane);
+      padding: 8px 10px; border-radius: 8px; font-size: 0.78rem; line-height: 1.5;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22); pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+    [data-tip]:hover::before, [data-tip]:focus-visible::before {
+      content: ""; position: absolute; left: 10px; top: calc(100% + 1px); z-index: 41;
+      border: 5px solid transparent; border-bottom-color: var(--ink); pointer-events: none;
+    }
+    td:last-child [data-tip]:hover::after, th:last-child [data-tip]:hover::after { left: auto; right: 0; }
+
     .kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px dashed var(--line); }
     .kv:last-child { border-bottom: none; }
     .kv > span:first-child { color: var(--ink-2); }
 
     /* ── 차트 ───────────────────────────────────────────── */
-    .bars { display: flex; align-items: flex-end; gap: 14px; height: 132px; padding-top: 6px; }
-    .bar-col { flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
-    .bar-val { font-size: 0.78rem; font-weight: 650; text-align: center; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
-    .bar {
-      background: var(--brand); border-radius: 4px 4px 0 0; min-height: 3px;
-      border-bottom: 2px solid var(--surface);
+    .chart { display: block; width: min(100%, 460px); height: auto; overflow: visible; }
+    .chart-bar { cursor: help; }
+    /* 과거 연도는 물러서고 최근 연도가 앞에 선다. 축은 0에서 시작한다. */
+    .bar-mark { fill: color-mix(in srgb, var(--brand) 34%, var(--surface)); transition: fill .15s ease; }
+    .bar-mark.is-latest { fill: var(--brand); }
+    .chart-bar:hover .bar-mark { fill: color-mix(in srgb, var(--brand) 62%, var(--surface)); }
+    .chart-bar:hover .bar-mark.is-latest { fill: var(--brand-ink); }
+    .bar-empty { fill: var(--rule); }
+    .bar-label {
+      font-size: 13px; font-weight: 650; fill: var(--ink);
+      font-variant-numeric: tabular-nums; font-family: inherit;
     }
-    .bar.empty { background: repeating-linear-gradient(45deg, var(--surface-2) 0 4px, transparent 4px 8px); min-height: 6px; }
-    .bar-axis { border-top: 1px solid var(--rule); display: flex; gap: 14px; padding-top: 5px; }
-    .bar-axis > span { flex: 1 1 0; text-align: center; font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .bar-label.muted-text { font-size: 11px; font-weight: 400; fill: var(--muted); }
+    .bar-year { font-size: 11.5px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+    .bar-year.is-latest { fill: var(--ink-2); font-weight: 650; }
+    .bar-delta { font-size: 11px; font-variant-numeric: tabular-nums; }
+    .bar-delta.up { fill: var(--good-ink); }
+    .bar-delta.down { fill: var(--critical-ink); }
     .spark { display: block; }
     .delta.up { color: var(--good-ink); }
     .delta.down { color: var(--critical-ink); }
@@ -357,6 +413,7 @@
     <nav>
       <a href="{{ url_for('partners.index') }}" class="{{ 'on' if request.endpoint == 'partners.index' }}">리스트</a>
       <a href="{{ url_for('partners.map_view') }}" class="{{ 'on' if request.endpoint == 'partners.map_view' }}">지도</a>
+      <a href="{{ url_for('partners.changes_view') }}" class="{{ 'on' if request.endpoint == 'partners.changes_view' }}">변동이력</a>
       <a href="{{ url_for('partners.settings') }}" class="{{ 'on' if request.endpoint == 'partners.settings' }}">설정</a>
       <a href="{{ url_for('index') }}">HWP 변환기</a>
     </nav>

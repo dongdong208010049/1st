@@ -15,6 +15,8 @@
         {{ ui.category_badge(partner.category_code, category_labels, cat_class) }}
       </h1>
       <p class="small muted" style="margin:6px 0 0">
+        {% if partner.relation == 'affiliate' %}<span class="tag ok">계열사</span>{% endif %}
+        {% if partner.group_name %}<span class="tag" data-tip="기업집단">{{ partner.group_name }}</span>{% endif %}
         사업자번호 {{ partner.biz_no }} · {{ partner.industry or '세부업종 미지정' }}
         · {{ partner.tier or '구분 없음' }} · 담당 {{ partner.manager or '미지정' }}
       </p>
@@ -110,8 +112,25 @@
       {% endfor %}
     </div>
 
+    {% if siblings %}
     <div class="card">
-      <h2>개요 변경 이력</h2>
+      <h2>{{ ui.icon('group') }} 같은 기업집단 ({{ partner.group_name }})</h2>
+      {% for item in siblings %}
+        <a class="kv" style="text-decoration:none" href="{{ url_for('partners.detail', partner_id=item.id) }}">
+          <span class="small">{{ item.name }}
+            {% if item.relation == 'affiliate' %}<span class="tag ok">계열</span>{% endif %}
+          </span>
+          <span class="tiny muted">{{ category_labels.get(item.category_code, '미분류') }}</span>
+        </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-head">
+        <h2>개요 변경 이력</h2>
+        <a class="tiny" href="{{ url_for('partners.changes_view', partner=partner.id) }}">변동이력 전체 →</a>
+      </div>
       {% for item in profile_changes %}
         <div class="kv">
           <span class="small">{{ item.label }} · {{ item.value or '(비움)' }}</span>
@@ -124,28 +143,59 @@
   </div>
 
   <div>
-    <div class="card" id="metric-revenue">
+    <div class="card" id="revenue-chart">
       <div class="card-head">
-        <h2>최근 {{ yearly.bars|length or 3 }}년 {{ yearly.label }}{% if yearly.unit %} ({{ yearly.unit }}){% endif %}</h2>
-        {% if yearly.change is not none %}
-          <span class="small delta num {{ 'up' if yearly.change > 0 else 'down' }}">
-            {{ '▲' if yearly.change > 0 else '▼' }}{{ '%.1f'|format(yearly.change|abs) }}%
-          </span>
-        {% endif %}
+        <h2>{{ ui.icon('trend') }} 최근 {{ yearly.bars|length or 3 }}년 {{ yearly.label }}</h2>
+        <span class="small">
+          {% if yearly.cagr is not none %}
+            <span class="muted tiny" data-tip="연평균 성장률 (CAGR)">연평균</span>
+            <span class="delta num {{ 'up' if yearly.cagr > 0 else ('down' if yearly.cagr < 0 else '') }}">
+              {{ '%+.1f'|format(yearly.cagr) }}%
+            </span>
+          {% endif %}
+          {% if yearly.change is not none %}
+            <span class="muted tiny" style="margin-left:8px" data-tip="첫 해 대비 최근 해">누적</span>
+            <span class="delta num {{ 'up' if yearly.change > 0 else ('down' if yearly.change < 0 else '') }}">
+              {{ '%+.1f'|format(yearly.change) }}%
+            </span>
+          {% endif %}
+        </span>
       </div>
+
       {% if yearly.bars %}
-        <div class="bars">
+        <svg class="chart" viewBox="0 -24 {{ yearly.width }} {{ yearly.plot_height + 70 }}"
+             width="{{ yearly.width }}" height="{{ yearly.plot_height + 70 }}" role="img"
+             aria-label="최근 {{ yearly.bars|length }}년 {{ yearly.label }} 추이">
+          <!-- 기준선만 두고 격자는 쓰지 않는다. 막대는 0에서 시작한다. -->
+          <line x1="0" y1="{{ yearly.plot_height + 0.5 }}" x2="{{ yearly.width }}" y2="{{ yearly.plot_height + 0.5 }}"
+                stroke="var(--rule)" stroke-width="1"/>
           {% for bar in yearly.bars %}
-            <div class="bar-col">
-              <div class="bar-val">{{ '{:,.0f}'.format(bar.value) if bar.value is not none else '—' }}</div>
-              <div class="bar {{ 'empty' if bar.value is none }}" style="height: {{ (bar.ratio * 100)|round(1) }}%"></div>
-            </div>
+            <g class="chart-bar" data-tip="{{ bar.year }}년 {{ '{:,.0f}'.format(bar.value) if bar.value is not none else '자료 없음' }}{{ yearly.unit if bar.value is not none else '' }}{% if bar.yoy is not none %}&#10;전년 대비 {{ '%+.1f'|format(bar.yoy) }}%{% endif %}">
+              <rect x="{{ bar.x }}" y="0" width="{{ bar.w }}" height="{{ yearly.plot_height }}" fill="transparent"/>
+              {% if bar.value is not none %}
+                <rect class="bar-mark {{ 'is-latest' if bar.latest }}" x="{{ bar.x }}" y="{{ bar.y }}"
+                      width="{{ bar.w }}" height="{{ bar.h }}" rx="4" ry="4"/>
+                <text class="bar-label" x="{{ bar.cx }}" y="{{ bar.y - 9 }}" text-anchor="middle">
+                  {{ '{:,.0f}'.format(bar.value) }}
+                </text>
+                {% if bar.yoy is not none %}
+                  <text class="bar-delta {{ 'up' if bar.yoy > 0 else 'down' }}" x="{{ bar.cx }}" y="{{ yearly.plot_height + 32 }}" text-anchor="middle">
+                    {{ '▲' if bar.yoy > 0 else '▼' }}{{ '%.1f'|format(bar.yoy|abs) }}%
+                  </text>
+                {% endif %}
+              {% else %}
+                <rect class="bar-empty" x="{{ bar.x }}" y="{{ yearly.plot_height - 6 }}" width="{{ bar.w }}" height="6" rx="3"/>
+                <text class="bar-label muted-text" x="{{ bar.cx }}" y="{{ yearly.plot_height - 14 }}" text-anchor="middle">자료 없음</text>
+              {% endif %}
+              <text class="bar-year {{ 'is-latest' if bar.latest }}" x="{{ bar.cx }}" y="{{ yearly.plot_height + 17 }}" text-anchor="middle">
+                {{ bar.year }}
+              </text>
+            </g>
           {% endfor %}
-        </div>
-        <div class="bar-axis">
-          {% for bar in yearly.bars %}<span>{{ bar.year }}</span>{% endfor %}
-        </div>
-        <p class="tiny muted" style="margin:8px 0 0">{{ yearly.note }}</p>
+        </svg>
+        <p class="tiny muted" style="margin:6px 0 0">
+          단위 {{ yearly.unit }} · {{ yearly.note }}
+        </p>
       {% else %}
         <p class="small muted">
           매출 자료가 없습니다. 표준재무제표증명·부가세 과세표준증명을 징구해

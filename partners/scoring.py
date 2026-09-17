@@ -38,6 +38,7 @@ CRITICAL_RULES = (
     ("biz_status", ">=", 2.0, "국세청 사업자상태: 폐업"),
     ("biz_status", "==", 1.0, "국세청 사업자상태: 휴업"),
     ("pension_status", ">=", 2.0, "국민연금 사업장 탈퇴(근로자 0명·폐업 직전)"),
+    ("factory_status", ">=", 2.0, "공장등록 취소·말소(가동 중단)"),
     ("equity_impairment", ">=", 100.0, "완전자본잠식"),
     ("wage_arrears_count", ">=", 1.0, "고용노동부 임금체불 사업주 명단 등재"),
     ("legal_count", ">=", 1.0, "회생·파산·부도·경매 등 법적 사건 발생"),
@@ -122,6 +123,43 @@ class PartnerScore:
             return "none"
         return signal_of(min(scores))
 
+    def category_metrics(self, category: str) -> list[MetricScore]:
+        return [
+            m for m in self.metrics
+            if m.category == category and (m.value is not None or m.text)
+        ]
+
+    def category_headline(self, category: str) -> str:
+        """픽토그램 옆에 붙일 한 조각.
+
+        문제가 있으면 가장 나쁜 지표를, 다 정상이면 그 카테고리의 대표 지표를
+        보여준다. 참고용(info) 지표는 채점 지표보다 뒤에 둔다.
+        """
+        items = self.category_metrics(category)
+        if not items:
+            return "—"
+        scored = [m for m in items if m.score is not None]
+        if scored:
+            worst = min(scored, key=lambda m: m.score)
+            if worst.score < SIGNAL_WARN:
+                return worst.summary
+            return scored[0].summary  # 정의 순서상 첫 채점 지표가 대표값
+        notable = [m for m in items if not m.is_clean]
+        return notable[0].summary if notable else "이상 없음"
+
+    def category_tip(self, category: str) -> str:
+        """마우스를 올렸을 때 보여줄 전체 내역(줄바꿈 포함)."""
+        items = self.category_metrics(category)
+        if not items:
+            return f"{category}: 수집된 자료가 없습니다"
+        lines = [f"{category} · {SIGNAL_TEXT[self.category_signal(category)]}"]
+        for metric in items:
+            mark = SIGNAL_MARK[metric.signal]
+            score = f" {metric.score:.0f}점" if metric.score is not None else ""
+            weight = f" (가중 {metric.weight:g})" if metric.weight else ""
+            lines.append(f"{mark} {metric.label} {metric.display}{score}{weight}")
+        return "\n".join(lines)
+
     def category_summary(self, category: str, limit: int = 3) -> str:
         items = [
             m for m in self.metrics
@@ -134,6 +172,11 @@ class PartnerScore:
             # 전부 이상 없음. 지표가 하나뿐인 카테고리는 그 값을 그대로 보여준다.
             return items[0].summary if len(items) == 1 else "이상 없음"
         return " · ".join(m.summary for m in notable[:limit])
+
+
+# 신호등을 글자·기호로도 표현한다(색만으로 뜻을 전달하지 않기 위해).
+SIGNAL_TEXT = {"green": "정상", "amber": "주의", "red": "경고", "none": "자료없음"}
+SIGNAL_MARK = {"green": "●", "amber": "▲", "red": "■", "none": "·"}
 
 
 def signal_of(score: float | None) -> str:

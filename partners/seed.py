@@ -31,6 +31,13 @@ METRIC_DEFS = (
     ("sanction_count", "경영환경", "행정제재", "건", "lower_better", 0, 2, 5, "risk_list", 52),
     ("legal_count", "경영환경", "회생·파산·부도·경매", "건", "lower_better", 0, 1, 10, "risk_list", 53),
     ("doc_freshness", "경영환경", "자료 제출 경과", "개월", "lower_better", 3, 15, 10, "submission", 54),
+    # 공장등록·조달실적: 공시가 없는 소규모 제조 협력사를 보는 경로
+    ("factory_status", "기업상태", "공장등록", None, "lower_better", 0, 2, 0, "factory", 12),
+    ("plant_area", "기업상태", "공장 용지면적", "㎡", "info", None, None, 0, "factory", 13),
+    ("plant_workers", "인원", "공장등록 종업원", "명", "info", None, None, 0, "factory", 46),
+    ("worker_gap", "인원", "연금·공장 인원 괴리", "%", "higher_better", -10, -60, 5, "factory", 47),
+    ("public_award", "매출", "공공 수주(1년)", "백만원", "info", None, None, 0, "procurement", 33),
+    ("public_award_change", "매출", "공공 수주 증감", "%", "higher_better", 0, -40, 5, "procurement", 34),
 )
 
 # 기업개요 항목 기본값. 화면(설정)에서 추가할 수 있고, 수집기가 새 코드를 들고 오면
@@ -57,20 +64,24 @@ CATEGORIES = (
     ("etc", "기타", 90),
 )
 
-# (name, biz_no, category_code, industry, manager, tier, profile)
+# (name, biz_no, category_code, relation, group_name, industry, manager, tier, profile)
 SAMPLE_PARTNERS = (
-    ("대한정밀공업", "1048201234", "mold", "금속 가공", "김철수", "1차", "distress"),
-    ("동성테크", "2208102345", "production", "전자부품", "김철수", "1차", "healthy"),
-    ("세방기전", "3138503456", "production", "전기장비", "이영희", "1차", "watch"),
-    ("한울소재", "4028104567", "production", "화학소재", "이영희", "2차", "healthy"),
-    ("우진몰드", "5178205678", "mold", "금형", "박민수", "2차", "watch"),
-    ("삼환전자", "6068306789", "inspection", "반도체부품", "박민수", "1차", "healthy"),
-    ("태광하이텍", "7098407890", "jig", "정밀가공", "정지훈", "2차", "closed"),
-    ("나라프레스", "8108508901", "production", "프레스 가공", "정지훈", "2차", "suspended"),
+    ("대한정밀공업", "1048201234", "mold", "external", "대한그룹", "금속 가공", "김철수", "1차", "distress"),
+    ("대한소재", "1148201567", "production", "external", "대한그룹", "소재 가공", "김철수", "2차", "watch"),
+    ("동성테크", "2208102345", "production", "external", None, "전자부품", "김철수", "1차", "healthy"),
+    ("세방기전", "3138503456", "production", "external", None, "전기장비", "이영희", "1차", "watch"),
+    ("한울소재", "4028104567", "production", "external", None, "화학소재", "이영희", "2차", "healthy"),
+    ("우진몰드", "5178205678", "mold", "external", None, "금형", "박민수", "2차", "watch"),
+    ("삼환전자", "6068306789", "inspection", "external", None, "반도체부품", "박민수", "1차", "healthy"),
+    ("태광하이텍", "7098407890", "jig", "external", None, "정밀가공", "정지훈", "2차", "closed"),
+    ("나라프레스", "8108508901", "production", "external", None, "프레스 가공", "정지훈", "2차", "suspended"),
+    # 계열사도 같은 기준으로 감시한다(거래 비중이 커서 빠지면 그림이 안 맞는다).
+    ("한빛모터스", "2018309345", "production", "affiliate", "한빛그룹", "구동장치", "김철수", "계열", "healthy"),
+    ("한빛정공", "2028409456", "mold", "affiliate", "한빛그룹", "금형·치공구", "이영희", "계열", "watch"),
     # 아래 두 곳은 외부감사 대상이 아닌 소규모 업체다. DART에 재무가 없으므로
     # 연금(인원·신고소득)·신용등급·제출자료·법적 사건으로만 감시된다.
-    ("성진지그", "9218609012", "jig", "치공구 제작", "김철수", "2차", "small_healthy"),
-    ("명진검사구", "1338709123", "inspection", "검사구 제작", "이영희", "2차", "small_distress"),
+    ("성진지그", "9218609012", "jig", "external", None, "치공구 제작", "김철수", "2차", "small_healthy"),
+    ("명진검사구", "1338709123", "inspection", "external", None, "검사구 제작", "이영희", "2차", "small_distress"),
 )
 
 # 정기 징구 자료 샘플. (biz_no, doc_type, 제출일, 대상기간)
@@ -126,12 +137,15 @@ def seed_sample_partners(conn) -> list[int]:
             name=name,
             biz_no=biz_no,
             category_code=category_code,
+            relation=relation,
+            group_name=group_name,
             industry=industry,
             manager=manager,
             tier=tier,
             profile=profile,
         )
-        for name, biz_no, category_code, industry, manager, tier, profile in SAMPLE_PARTNERS
+        for name, biz_no, category_code, relation, group_name, industry, manager, tier, profile
+        in SAMPLE_PARTNERS
     ]
 
 
@@ -164,13 +178,16 @@ SAMPLE_PRODUCTS = (
     ("8108508901", "프레스 가공품"),
     ("9218609012", "조립 지그·치공구"),
     ("1338709123", "검사구·게이지"),
+    ("1148201567", "알루미늄 압출재"),
+    ("2018309345", "구동 모터 어셈블리"),
+    ("2028409456", "정밀 치공구"),
 )
 
 # 개요 변경 이력 샘플. (biz_no, field, 이전값, 이전 확인일, 새값, 새 확인일)
 SAMPLE_PROFILE_HISTORY = (
-    ("1048201234", "ceo_name", "김성곤", "2023-02-10", "박영수", "2026-04-02"),
+    ("1048201234", "ceo_name", "김성곤", "2023-02-10", "박영수", None),
     ("3138503456", "address", "경상남도 김해시 주촌면 골든루트로 12", "2023-03-15",
-     "경상남도 김해시 주촌면 골든루트로 210", "2026-06-11"),
+     "경상남도 김해시 주촌면 골든루트로 210", None),
 )
 
 
@@ -196,6 +213,7 @@ def seed_profile_samples(conn) -> None:
         partner = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
         if not partner:
             continue
+        new_on = new_on or date.today().isoformat()
         models.put_profile_value(conn, partner["id"], field, old_value, old_on, "seed")
         models.put_profile_value(conn, partner["id"], field, new_value, new_on, "seed")
         models.add_change(
@@ -207,21 +225,15 @@ def seed_profile_samples(conn) -> None:
 
 
 def seed_changes(conn, recent_months: int = 4) -> None:
-    """최근 사건·상태 변화를 티커용 변경 로그로 옮긴다.
+    """상태 전환을 변경 로그로 옮긴다.
 
-    첫 적재는 '변경'이 아니라서 change_log가 비는데, 화면 확인용으로 최근 몇 달의
-    실제 사건과 상태 전환을 옮겨 담는다. 운영 중에는 수집이 알아서 쌓는다.
+    리스크 사건은 run_collection이 새로 확인할 때 이미 기록하므로 여기서 다시
+    넣지 않는다(그렇게 하면 같은 사건이 두 줄로 남는다). 상태 전환은 첫 적재에서는
+    '변경'으로 잡히지 않기 때문에 시계열에서 뽑아 담는다.
     """
     floor = models.shift_period(models.current_period(), -recent_months)
     for partner in models.list_partners(conn):
-        for event in models.list_risk_events(conn, partner["id"]):
-            if event["occurred_on"][:7] < floor:
-                continue
-            models.add_change(
-                conn, partner["id"], "사건", f"{event['kind']}: {event['title']}",
-                event["occurred_on"], severity=event["severity"], anchor="events",
-            )
-        for code in ("biz_status", "pension_status"):
+        for code in ("biz_status", "pension_status", "factory_status"):
             timeline = models.status_timeline(conn, partner["id"], code)
             for entry in timeline[1:]:
                 if entry["since"] < floor:
@@ -243,10 +255,11 @@ def seed_all(conn, months: int | None = None, start: str = models.HISTORY_START)
     seed_metric_defs(conn)
     seed_sample_partners(conn)
     seed_sample_submissions(conn)
-    seed_profile_samples(conn)
     periods = (
         models.recent_periods(models.current_period(), months)
         if months else models.history_periods(start=start)
     )
     run_collection(conn, periods)
+    # 담당자가 직접 확인한 개요 값은 수집값보다 뒤에 넣어 최신으로 남긴다.
+    seed_profile_samples(conn)
     seed_changes(conn)

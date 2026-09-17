@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS partners (
     corp_no     TEXT,                      -- 법인등록번호
     dart_corp_code TEXT,                   -- DART 고유번호(8자리)
     category_code TEXT REFERENCES partner_categories(code),  -- 업(業) 분류
+    relation    TEXT NOT NULL DEFAULT 'external',  -- external(외부 협력사) | affiliate(계열사)
+    group_name  TEXT,                      -- 기업집단·계열 그룹명 (계열사 묶음)
     industry    TEXT,                      -- 세부 업종 메모
     manager     TEXT,                      -- 내부 담당자
     tier        TEXT,                       -- 공급 등급/구분
@@ -157,6 +159,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(partners)")}
     if "category_code" not in columns:
         conn.execute("ALTER TABLE partners ADD COLUMN category_code TEXT")
+    if "relation" not in columns:
+        conn.execute("ALTER TABLE partners ADD COLUMN relation TEXT NOT NULL DEFAULT 'external'")
+    if "group_name" not in columns:
+        conn.execute("ALTER TABLE partners ADD COLUMN group_name TEXT")
 
 
 # --- 협력사 -----------------------------------------------------------------
@@ -167,9 +173,10 @@ def upsert_partner(conn: sqlite3.Connection, **fields) -> int:
     row = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
     columns = (
         "name", "biz_no", "corp_no", "dart_corp_code",
-        "category_code", "industry", "manager", "tier", "profile",
+        "category_code", "relation", "group_name", "industry", "manager", "tier", "profile",
     )
     values = {key: fields.get(key) for key in columns}
+    values["relation"] = values.get("relation") or "external"
     if row:
         assignments = ", ".join(f"{key} = :{key}" for key in columns)
         conn.execute(f"UPDATE partners SET {assignments} WHERE id = :id", {**values, "id": row["id"]})
@@ -194,13 +201,35 @@ def get_partner(conn: sqlite3.Connection, partner_id: int) -> sqlite3.Row | None
 
 def update_partner_fields(conn: sqlite3.Connection, partner_id: int, **fields) -> None:
     """상세 화면에서 고칠 수 있는 항목만 갱신한다."""
-    editable = ("name", "category_code", "industry", "manager", "tier", "corp_no", "dart_corp_code")
+    editable = (
+        "name", "category_code", "relation", "group_name",
+        "industry", "manager", "tier", "corp_no", "dart_corp_code",
+    )
     updates = {key: fields[key] for key in editable if key in fields}
     if not updates:
         return
     assignments = ", ".join(f"{key} = :{key}" for key in updates)
     conn.execute(f"UPDATE partners SET {assignments} WHERE id = :id", {**updates, "id": partner_id})
     conn.commit()
+
+
+RELATION_LABELS = {"external": "외부 협력사", "affiliate": "계열사"}
+
+
+def list_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """기업집단(계열 그룹)별 협력사 수."""
+    return conn.execute(
+        "SELECT group_name, COUNT(*) AS n FROM partners "
+        "WHERE group_name IS NOT NULL AND group_name != '' "
+        "GROUP BY group_name ORDER BY n DESC, group_name"
+    ).fetchall()
+
+
+def group_members(conn: sqlite3.Connection, group_name: str, exclude_id: int | None = None) -> list[sqlite3.Row]:
+    rows = conn.execute(
+        "SELECT * FROM partners WHERE group_name = ? ORDER BY name", (group_name,)
+    ).fetchall()
+    return [row for row in rows if row["id"] != exclude_id]
 
 
 # --- 업종 카테고리 ----------------------------------------------------------
@@ -532,13 +561,14 @@ def latest_profile_value(conn: sqlite3.Connection, partner_id: int, field_code: 
 
 
 def profile_snapshot(conn: sqlite3.Connection, partner_id: int) -> dict[str, sqlite3.Row]:
+    """항목별 최신값. 확인일이 같으면 나중에 기록된 행(id가 큰 쪽)이 최신이다."""
     rows = conn.execute(
-        "SELECT v.* FROM profile_values v "
-        "JOIN (SELECT field_code, MAX(valid_from) AS valid_from FROM profile_values "
-        "      WHERE partner_id = ? GROUP BY field_code) latest "
-        "  ON v.field_code = latest.field_code AND v.valid_from = latest.valid_from "
-        "WHERE v.partner_id = ? GROUP BY v.field_code",
-        (partner_id, partner_id),
+        "SELECT * FROM ("
+        "  SELECT v.*, ROW_NUMBER() OVER ("
+        "    PARTITION BY field_code ORDER BY valid_from DESC, id DESC"
+        "  ) AS rn FROM profile_values v WHERE partner_id = ?"
+        ") WHERE rn = 1",
+        (partner_id,),
     ).fetchall()
     return {row["field_code"]: row for row in rows}
 
@@ -584,6 +614,45 @@ def list_changes(conn: sqlite3.Connection, limit: int = 40, since_id: int = 0) -
         "WHERE c.id > ? ORDER BY c.id DESC LIMIT ?",
         (since_id, limit),
     ).fetchall()
+
+
+def search_changes(
+    conn: sqlite3.Connection,
+    partner_id: int | None = None,
+    kind: str | None = None,
+    severity: str | None = None,
+    since: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[sqlite3.Row]:
+    """변동이력 화면용 조회. 협력사·종류·심각도·기간으로 좁힌다."""
+    clauses, params = ["1 = 1"], []
+    if partner_id:
+        clauses.append("c.partner_id = ?")
+        params.append(partner_id)
+    if kind:
+        clauses.append("c.kind = ?")
+        params.append(kind)
+    if severity:
+        clauses.append("c.severity = ?")
+        params.append(severity)
+    if since:
+        clauses.append("c.created_at >= ?")
+        params.append(since)
+    params.extend([limit, offset])
+    return conn.execute(
+        "SELECT c.*, p.name AS partner_name, p.category_code, p.relation, p.group_name "
+        "FROM change_log c JOIN partners p ON p.id = c.partner_id "
+        f"WHERE {' AND '.join(clauses)} ORDER BY c.id DESC LIMIT ? OFFSET ?",
+        params,
+    ).fetchall()
+
+
+def count_changes(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute("SELECT kind, COUNT(*) AS n FROM change_log GROUP BY kind").fetchall()
+    counts = {row["kind"]: row["n"] for row in rows}
+    counts["전체"] = sum(counts.values())
+    return counts
 
 
 def max_change_id(conn: sqlite3.Connection) -> int:

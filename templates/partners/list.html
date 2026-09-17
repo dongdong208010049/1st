@@ -5,222 +5,269 @@
 
 {% block content %}
 
-<div class="tiles">
-  <div class="tile"><span class="n num">{{ summary.total }}</span><span class="k">전체 협력사</span></div>
-  <a class="tile red" href="{{ url_for('partners.index', signal='red') }}"><span class="n num">{{ summary.red }}</span><span class="k">경고</span></a>
-  <a class="tile amber" href="{{ url_for('partners.index', signal='amber') }}"><span class="n num">{{ summary.amber }}</span><span class="k">주의</span></a>
-  <a class="tile green" href="{{ url_for('partners.index', signal='green') }}"><span class="n num">{{ summary.green }}</span><span class="k">정상</span></a>
-  <div class="tile"><span class="n num">{{ summary.critical }}</span><span class="k">즉시위험 사유</span></div>
-  <a class="tile" href="{{ url_for('partners.index', coverage='weak') }}"><span class="n num">{{ summary.weak }}</span><span class="k">자료 취약(공시 없음)</span></a>
-  <div class="tile"><span class="n num">{{ summary.stale }}</span><span class="k">자료 노후 90일+</span></div>
-</div>
-
-{% if category_summary %}
-<div class="card" style="padding:11px 14px">
-  <div class="chips">
-    <a class="chip {{ 'on' if not filters.category }}" href="{{ url_for('partners.index') }}">전체 {{ summary.total }}</a>
-    {% for item in category_summary %}
-      <a class="chip {{ 'on' if filters.category == item.code }} {{ 'zero' if not item.total }}"
-         href="{{ url_for('partners.index', category=item.code, period=period) }}">
-        {{ item.label }} {{ item.total }}{% if item.red %}<span class="mark">▲{{ item.red }}</span>{% endif %}
-      </a>
-    {% endfor %}
-  </div>
-</div>
-{% endif %}
-
-<div class="split" style="grid-template-columns: minmax(300px, 560px) 1fr">
-  <div class="card">
-    <div class="card-head">
-      <h2>업종별 배치</h2>
-      <a class="small" href="{{ url_for('partners.map_view') }}">지도 크게 보기 →</a>
-    </div>
-    {{ ui.map_panel(map_data, marker_shapes, '마커를 누르면 해당 협력사 상세로 이동합니다. 지도는 현재 필터를 따릅니다.') }}
-  </div>
-
-  <div>
-    <div class="card" style="padding:11px 14px">
-      <form class="filters" method="get" action="{{ url_for('partners.index') }}">
-        <input type="text" name="q" value="{{ filters.q }}" placeholder="협력사명·사업자번호·업종" style="min-width:190px">
-        <select name="category">
-          <option value="">업종 전체</option>
-          {% for item in category_options %}
-            <option value="{{ item.code }}" {% if filters.category == item.code %}selected{% endif %}>{{ item.label }}</option>
-          {% endfor %}
-          <option value="none" {% if filters.category == 'none' %}selected{% endif %}>미분류</option>
-        </select>
-        <select name="coverage">
-          <option value="">자료 전체</option>
-          <option value="weak" {% if filters.coverage == 'weak' %}selected{% endif %}>자료 취약(공시 없음)</option>
-        </select>
-        <select name="signal">
-          <option value="">신호등 전체</option>
-          {% for key in ['red', 'amber', 'green', 'none'] %}
-            <option value="{{ key }}" {% if filters.signal == key %}selected{% endif %}>{{ signal_labels[key] }}</option>
-          {% endfor %}
-        </select>
-        <select name="grade">
-          <option value="">등급 전체</option>
-          {% for key in ['A', 'B', 'C', 'D', 'E'] %}
-            <option value="{{ key }}" {% if filters.grade == key %}selected{% endif %}>{{ key }}등급</option>
-          {% endfor %}
-        </select>
-        <select name="manager">
-          <option value="">담당자 전체</option>
-          {% for name in managers %}<option value="{{ name }}" {% if filters.manager == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
-        </select>
-        <select name="order">
-          <option value="risk" {% if filters.order == 'risk' %}selected{% endif %}>위험 우선</option>
-          <option value="score_desc" {% if filters.order == 'score_desc' %}selected{% endif %}>점수 높은 순</option>
-          <option value="name" {% if filters.order == 'name' %}selected{% endif %}>협력사명</option>
-          <option value="stale" {% if filters.order == 'stale' %}selected{% endif %}>오래된 자료 순</option>
-        </select>
-        <select name="period">
-          {% for item in periods[-24:]|reverse %}
-            <option value="{{ item }}" {% if period == item %}selected{% endif %}>{{ item }} 기준</option>
-          {% endfor %}
-        </select>
-        <button type="submit">조회</button>
-        <a class="small muted" href="{{ url_for('partners.index') }}">초기화</a>
-      </form>
+{# ── 지도를 가운데 두고 현황을 둘러싸는 배치 ───────────────────────── #}
+<div class="ring">
+  <div class="ring-left">
+    <div class="card">
+      <h2>전사 현황</h2>
+      <div class="stat-list">
+        <a class="stat" href="{{ url_for('partners.index', signal='red') }}"
+           data-tip="종합 신호등이 경고(40점 미만)이거나 즉시위험 사유가 있는 협력사">
+          <span class="dot red"></span><span class="stat-k">경고</span><span class="stat-n num">{{ summary.red }}</span>
+        </a>
+        <a class="stat" href="{{ url_for('partners.index', signal='amber') }}"
+           data-tip="종합 40~70점. 지켜봐야 하는 협력사">
+          <span class="dot amber"></span><span class="stat-k">주의</span><span class="stat-n num">{{ summary.amber }}</span>
+        </a>
+        <a class="stat" href="{{ url_for('partners.index', signal='green') }}"
+           data-tip="종합 70점 이상. 특이사항 없음">
+          <span class="dot green"></span><span class="stat-k">정상</span><span class="stat-n num">{{ summary.green }}</span>
+        </a>
+        <div class="stat" data-tip="폐업·휴업, 연금 사업장 탈퇴, 공장등록 취소, 완전자본잠식,&#10;임금체불 명단, 회생·파산·부도·경매, 인원 30% 급감 중 하나라도 해당">
+          {{ ui.icon('shield') }}<span class="stat-k">즉시위험</span><span class="stat-n num">{{ summary.critical }}</span>
+        </div>
+        <a class="stat" href="{{ url_for('partners.index', coverage='weak') }}"
+           data-tip="DART 공시 재무가 없거나 자료 충족률이 낮아 등급 상한이 걸린 협력사.&#10;제출자료 징구·신용등급 등록 대상입니다.">
+          {{ ui.icon('doc') }}<span class="stat-k">자료 취약</span><span class="stat-n num">{{ summary.weak }}</span>
+        </a>
+        <a class="stat" href="{{ url_for('partners.index', relation='affiliate') }}"
+           data-tip="계열사도 외부 협력사와 같은 기준으로 감시합니다">
+          {{ ui.icon('group') }}<span class="stat-k">계열사</span><span class="stat-n num">{{ summary.affiliate }}</span>
+        </a>
+      </div>
     </div>
 
     <div class="card">
-      <h2>업데이트 요약</h2>
-      {% if ticker %}
-        {% for item in ticker[:7] %}
-          <a class="kv" style="text-decoration:none" href="{{ url_for('partners.detail', partner_id=item.partner_id, _anchor=item.anchor or None) }}">
-            <span class="small">
-              <span class="dot {{ 'red' if item.severity == 'critical' else ('amber' if item.severity == 'warn' else ('green' if item.severity == 'good' else 'none')) }}"></span>
-              <strong>{{ item.partner_name }}</strong> {{ item.title }}
-              {% if item.id > seen_change_id %}<span class="tag critical">NEW</span>{% endif %}
-            </span>
-            <span class="tiny muted nowrap num">{{ item.created_at[5:10] }}</span>
+      <h2>업종</h2>
+      <div class="chips" style="flex-direction:column; align-items:stretch">
+        <a class="chip {{ 'on' if not filters.category }}" href="{{ url_for('partners.index') }}">
+          전체 <span class="num">{{ summary.total }}</span>
+        </a>
+        {% for item in category_summary %}
+          <a class="chip {{ 'on' if filters.category == item.code }} {{ 'zero' if not item.total }}"
+             href="{{ url_for('partners.index', category=item.code, period=period) }}"
+             data-tip="{{ item.label }} {{ item.total }}곳 · 경고 {{ item.red }}곳">
+            {{ item.label }} <span class="num">{{ item.total }}</span>
+            {% if item.red %}<span class="mark">■{{ item.red }}</span>{% endif %}
           </a>
         {% endfor %}
-      {% else %}
-        <p class="small muted">최근 변경이 없습니다. 수집을 실행하면 바뀐 항목이 여기와 상단 띠에 올라옵니다.</p>
-      {% endif %}
-    </div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-head">
-    <h2>협력사 {{ rows|length }}곳{% if rows|length != summary.total %} (전체 {{ summary.total }}){% endif %}</h2>
-    <span class="tiny muted">{{ period }} 기준 · 노란 액센트는 마지막으로 본 뒤 바뀐 협력사</span>
-  </div>
-      <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>종합</th>
-            <th>협력사</th>
-            {% for category in categories %}<th>{{ category }}</th>{% endfor %}
-            <th>추세 6개월</th>
-            <th>갱신</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
-          {% set change = changed.get(row.partner.id) %}
-          <tr class="{{ 'row-new' if change }}">
-            <td class="nowrap">
-              <span class="dot {{ row.score.signal }}"></span>
-              <span class="grade g-{{ row.score.grade }}">{{ row.score.grade }}</span>
-              <span class="small muted num">{{ '%.0f'|format(row.score.score) if row.score.score is not none else '—' }}</span>
-              {% if row.score.grade_cap %}
-                <div class="tiny muted">자료 {{ '%.0f'|format(row.score.coverage * 100) }}% · 상한 {{ row.score.grade_cap }}</div>
-              {% endif %}
-            </td>
-            <td>
-              <a href="{{ url_for('partners.detail', partner_id=row.partner.id) }}"><strong>{{ row.partner.name }}</strong></a>
-              {{ ui.category_badge(row.partner.category_code, category_labels, cat_class) }}
-              {% if row.partner.tier %}<span class="tag">{{ row.partner.tier }}</span>{% endif %}
-              {% if change %}<span class="tag critical">변경 {{ change.n }}</span>{% endif %}
-              <div class="tiny muted">{{ row.partner.biz_no }} · {{ row.partner.industry or '-' }} · {{ row.partner.manager or '담당 미지정' }}</div>
-              {% if row.score.critical_reasons %}
-                <span class="alert">즉시위험 · {{ row.score.critical_reasons[:2]|join(' / ') }}{% if row.score.critical_reasons|length > 2 %} 외 {{ row.score.critical_reasons|length - 2 }}건{% endif %}</span>
-              {% endif %}
-            </td>
-            {% for category in categories %}
-            <td {% if loop.first %}class="nowrap"{% endif %}>
-              <span class="dot {{ row.score.category_signal(category) }}"></span>
-              <span class="small">{{ row.score.category_summary(category) }}</span>
-            </td>
-            {% endfor %}
-            <td class="nowrap">
-              {% if row.trend_points %}
-                <svg class="spark" width="72" height="22" viewBox="0 0 72 22" aria-hidden="true">
-                  <polyline points="{{ row.trend_points }}" fill="none" stroke-width="1.6"
-                    stroke="{{ 'var(--critical)' if row.score.signal == 'red' else ('var(--warn)' if row.score.signal == 'amber' else 'var(--good)') }}"/>
-                </svg>
-              {% else %}<span class="small muted">—</span>{% endif %}
-              {% if row.trend_delta is not none %}
-                {% if row.trend_delta|abs < 0.05 %}
-                  <span class="tiny muted num">±0</span>
-                {% else %}
-                  <span class="tiny delta num {{ 'up' if row.trend_delta > 0 else 'down' }}">
-                    {{ '▲' if row.trend_delta > 0 else '▼' }}{{ '%.1f'|format(row.trend_delta|abs) }}
-                  </span>
-                {% endif %}
-              {% endif %}
-            </td>
-            <td class="tiny nowrap {{ 'muted' if not row.score.stale else '' }}">
-              <span class="num">{{ row.score.last_collected_at[:10] if row.score.last_collected_at else '수집 없음' }}</span>
-              {% if row.score.stale %}<span class="tag">노후</span>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-          {% if not rows %}
-          <tr><td colspan="{{ 4 + categories|length }}" class="muted" style="padding:28px; text-align:center">
-            조건에 맞는 협력사가 없습니다.
-          </td></tr>
-          {% endif %}
-        </tbody>
-      </table>
       </div>
-</div>
+    </div>
 
-<div class="card">
-  <h2>수집 상태</h2>
-  <div class="grid">
-    <div>
+    {% if groups %}
+    <div class="card">
+      <h2>기업집단</h2>
+      {% for item in groups %}
+        <a class="kv" style="text-decoration:none" href="{{ url_for('partners.index', group=item.group_name) }}">
+          <span class="small">{{ ui.icon('group') }} {{ item.group_name }}</span>
+          <span class="tiny muted num">{{ item.n }}곳</span>
+        </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="ring-center card">
+    <div class="card-head">
+      <h2>업종별 배치</h2>
+      <a class="small" href="{{ url_for('partners.map_view') }}">크게 보기 →</a>
+    </div>
+    {{ ui.map_panel(map_data, marker_shapes, '마커를 누르면 상세로 이동합니다. 모양=업종, 색=신호등.') }}
+  </div>
+
+  <div class="ring-right">
+    <div class="card">
+      <div class="card-head">
+        <h2>변동이력</h2>
+        <a class="small" href="{{ url_for('partners.changes_view') }}">전체 보기 →</a>
+      </div>
+      {% for item in ticker[:8] %}
+        <a class="kv" style="text-decoration:none"
+           href="{{ url_for('partners.detail', partner_id=item.partner_id, _anchor=item.anchor or None) }}"
+           data-tip="{{ item.kind }} · {{ item.title }}{% if item.detail %}&#10;{{ item.detail }}{% endif %}&#10;{{ item.created_at[:16] }}">
+          <span class="small">
+            <span class="dot {{ 'red' if item.severity == 'critical' else ('amber' if item.severity == 'warn' else ('green' if item.severity == 'good' else 'none')) }}"></span>
+            {{ ui.icon(change_icons.get(item.kind, 'plus')) }}
+            <strong>{{ item.partner_name }}</strong>
+          </span>
+          <span class="tiny muted nowrap num">
+            {% if item.id > seen_change_id %}<span class="tag critical">N</span>{% endif %}
+            {{ item.created_at[5:10] }}
+          </span>
+        </a>
+      {% else %}
+        <p class="small muted">최근 변경이 없습니다.</p>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <h2>위험 상위</h2>
+      {% for row in rows[:6] if row.score.signal in ('red', 'amber') %}
+        <a class="kv" style="text-decoration:none" href="{{ url_for('partners.detail', partner_id=row.partner.id) }}"
+           data-tip="{{ row.score.critical_reasons|join('&#10;') if row.score.critical_reasons else '종합 ' ~ '%.0f'|format(row.score.score or 0) ~ '점' }}">
+          <span class="small">
+            <span class="dot {{ row.score.signal }}"></span>
+            <span class="grade g-{{ row.score.grade }}">{{ row.score.grade }}</span>
+            {{ row.partner.name }}
+          </span>
+          <span class="tiny muted num">{{ '%.0f'|format(row.score.score) if row.score.score is not none else '—' }}</span>
+        </a>
+      {% else %}
+        <p class="small muted">경고·주의 협력사가 없습니다.</p>
+      {% endfor %}
+    </div>
+
+    <div class="card">
+      <h2>수집</h2>
       <form method="post" action="{{ url_for('partners.collect') }}">
         <input type="hidden" name="next" value="{{ url_for('partners.index') }}">
         {% for collector in collectors %}
-          <label class="small" style="display:block">
+          <label class="tiny" style="display:flex; align-items:center; gap:5px"
+                 data-tip="{{ collector.label }}&#10;채우는 지표: {{ collector.metric_codes|join(', ') }}&#10;{{ '실 API 연동 중' if collector.mode == 'live' else '키 없음 → 목업' }}">
             <input type="checkbox" name="sources" value="{{ collector.source }}" checked>
-            {{ collector.label }}
-            <span class="tag {{ 'ok' if collector.mode == 'live' else '' }}">{{ '실 API' if collector.mode == 'live' else '목업' }}</span>
+            <span class="dot {{ 'green' if collector.mode == 'live' else 'none' }}"></span>{{ collector.label }}
           </label>
         {% endfor %}
-        <p class="tiny muted" style="margin:8px 0 6px">
-          기간을 비우면 {{ history_start }} 이후 전 구간을 다시 맞춥니다.
-        </p>
-        <label class="small" style="display:block; margin-bottom:8px">
-          최근 <input type="number" name="months" placeholder="전체" min="1" max="120" style="width:74px"> 개월
-        </label>
-        <button type="submit">지금 수집</button>
+        <div style="display:flex; gap:6px; align-items:center; margin-top:8px">
+          <input type="number" name="months" placeholder="전체" min="1" max="120" style="width:72px">
+          <button type="submit">수집</button>
+        </div>
+        <p class="tiny muted" style="margin:6px 0 0">비우면 {{ history_start }} 이후 전 구간</p>
       </form>
       {% if not summary.total %}
         <form method="post" action="{{ url_for('partners.seed') }}" style="margin-top:8px">
-          <button class="ghost" type="submit">샘플 데이터로 시작</button>
+          <button class="ghost" type="submit">샘플로 시작</button>
         </form>
       {% endif %}
-    </div>
-    <div>
-      <h2 class="tiny muted">최근 실행</h2>
-      {% for run in runs %}
-        <div class="kv tiny">
-          <span>{{ run.source }} <span class="tag">{{ run.mode }}</span></span>
-          <span class="{{ 'muted' if run.status == 'ok' }} num">{{ run.records }}건 · {{ run.status }} · {{ run.started_at[:16] }}</span>
-        </div>
-      {% else %}
-        <p class="small muted">실행 기록이 없습니다.</p>
-      {% endfor %}
     </div>
   </div>
 </div>
 
+{# ── 전체 폭 리스트 ─────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-head">
+    <h2>협력사 {{ rows|length }}곳{% if rows|length != summary.total %} / 전체 {{ summary.total }}{% endif %}</h2>
+    <form class="filters" method="get" action="{{ url_for('partners.index') }}">
+      <input type="text" name="q" value="{{ filters.q }}" placeholder="협력사명·사업자번호" style="width:150px">
+      <select name="relation">
+        <option value="">관계 전체</option>
+        {% for key, label in relation_labels.items() %}
+          <option value="{{ key }}" {% if filters.relation == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <select name="category">
+        <option value="">업종 전체</option>
+        {% for item in category_options %}
+          <option value="{{ item.code }}" {% if filters.category == item.code %}selected{% endif %}>{{ item.label }}</option>
+        {% endfor %}
+        <option value="none" {% if filters.category == 'none' %}selected{% endif %}>미분류</option>
+      </select>
+      <select name="coverage">
+        <option value="">자료 전체</option>
+        <option value="weak" {% if filters.coverage == 'weak' %}selected{% endif %}>자료 취약</option>
+      </select>
+      <select name="signal">
+        <option value="">신호등 전체</option>
+        {% for key in ['red', 'amber', 'green', 'none'] %}
+          <option value="{{ key }}" {% if filters.signal == key %}selected{% endif %}>{{ signal_labels[key] }}</option>
+        {% endfor %}
+      </select>
+      <select name="manager">
+        <option value="">담당자 전체</option>
+        {% for name in managers %}<option value="{{ name }}" {% if filters.manager == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+      <select name="order">
+        <option value="risk" {% if filters.order == 'risk' %}selected{% endif %}>위험 우선</option>
+        <option value="score_desc" {% if filters.order == 'score_desc' %}selected{% endif %}>점수순</option>
+        <option value="name" {% if filters.order == 'name' %}selected{% endif %}>이름순</option>
+        <option value="stale" {% if filters.order == 'stale' %}selected{% endif %}>오래된 자료순</option>
+      </select>
+      <select name="period">
+        {% for item in periods[-24:]|reverse %}<option value="{{ item }}" {% if period == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+      </select>
+      <button type="submit">조회</button>
+      <a class="tiny muted" href="{{ url_for('partners.index') }}">초기화</a>
+    </form>
+  </div>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th><span data-tip="종합 신호등 · 등급(A~E) · 점수&#10;즉시위험이면 점수와 무관하게 E·경고">종합</span></th>
+        <th>협력사</th>
+        {% for category in categories %}
+          <th><span data-tip="{{ category }} 지표 묶음. 셀에 마우스를 올리면 항목별 값과 점수가 보입니다.">{{ category }}</span></th>
+        {% endfor %}
+        <th><span data-tip="최근 6개월 종합점수 흐름">추세</span></th>
+        <th><span data-tip="마지막 수집 시각. 90일이 지나면 노후로 표시하고 감점합니다.">갱신</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {% set change = changed.get(row.partner.id) %}
+      <tr class="{{ 'row-new' if change }}">
+        <td class="nowrap">
+          <span class="cell" data-tip="{{ signal_labels[row.score.signal] }} · {{ row.score.grade }}등급 · {{ '%.1f'|format(row.score.score) if row.score.score is not none else '자료 부족' }}점{% if row.score.grade_cap %}&#10;자료 충족률 {{ '%.0f'|format(row.score.coverage * 100) }}% → 등급 상한 {{ row.score.grade_cap }}{% endif %}{% if row.score.penalties %}&#10;{{ row.score.penalties|join('&#10;') }}{% endif %}">
+            <span class="dot {{ row.score.signal }}"></span>
+            <span class="grade g-{{ row.score.grade }}">{{ row.score.grade }}</span>
+            <span class="tiny muted num">{{ '%.0f'|format(row.score.score) if row.score.score is not none else '—' }}</span>
+          </span>
+        </td>
+        <td>
+          <a href="{{ url_for('partners.detail', partner_id=row.partner.id) }}"><strong>{{ row.partner.name }}</strong></a>
+          {{ ui.category_badge(row.partner.category_code, category_labels, cat_class) }}
+          {% if row.partner.relation == 'affiliate' %}
+            <span class="tag ok" data-tip="계열사{% if row.partner.group_name %} · {{ row.partner.group_name }}{% endif %}">계열</span>
+          {% elif row.partner.group_name %}
+            <span class="tag" data-tip="기업집단 {{ row.partner.group_name }}">{{ row.partner.group_name }}</span>
+          {% endif %}
+          {% if change %}
+            <span class="tag critical" data-tip="마지막으로 본 뒤 {{ change.n }}건 변경&#10;{{ change.title }}">변경 {{ change.n }}</span>
+          {% endif %}
+          <div class="tiny muted">{{ row.partner.biz_no }} · {{ row.partner.manager or '담당 미지정' }}</div>
+          {% if row.score.critical_reasons %}
+            <span class="alert" data-tip="{{ row.score.critical_reasons|join('&#10;') }}">
+              {{ ui.icon('shield', 12) }} 즉시위험 {{ row.score.critical_reasons|length }}건
+            </span>
+          {% endif %}
+        </td>
+        {% for category in categories %}
+          <td>{{ ui.status_cell(row.score.category_signal(category), category_icons.get(category, 'circle'),
+                                row.score.category_headline(category), row.score.category_tip(category)) }}</td>
+        {% endfor %}
+        <td class="nowrap">
+          <span class="cell" data-tip="최근 6개월 종합점수&#10;{{ row.trend|join(' → ') }}">
+            {% if row.trend_points %}
+              <svg class="spark" width="66" height="20" viewBox="0 0 72 22" aria-hidden="true">
+                <polyline points="{{ row.trend_points }}" fill="none" stroke-width="1.7"
+                  stroke="{{ 'var(--critical)' if row.score.signal == 'red' else ('var(--warn)' if row.score.signal == 'amber' else 'var(--good)') }}"/>
+              </svg>
+            {% endif %}
+            {% if row.trend_delta is not none %}
+              {% if row.trend_delta|abs < 0.05 %}
+                <span class="tiny muted num">±0</span>
+              {% else %}
+                <span class="tiny delta num {{ 'up' if row.trend_delta > 0 else 'down' }}">{{ '▲' if row.trend_delta > 0 else '▼' }}{{ '%.0f'|format(row.trend_delta|abs) }}</span>
+              {% endif %}
+            {% endif %}
+          </span>
+        </td>
+        <td class="tiny nowrap">
+          <span class="cell" data-tip="최종 수집 {{ row.score.last_collected_at[:16] if row.score.last_collected_at else '없음' }}&#10;자료원 {{ row.score.sources|join(', ') if row.score.sources else '없음' }}">
+            {% if row.score.stale %}<span class="dot amber"></span>{% endif %}
+            <span class="num muted">{{ row.score.last_collected_at[5:10] if row.score.last_collected_at else '—' }}</span>
+          </span>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr><td colspan="{{ 4 + categories|length }}" class="muted" style="padding:28px; text-align:center">
+        조건에 맞는 협력사가 없습니다.
+      </td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+</div>
 {% endblock %}

@@ -165,7 +165,8 @@ def test_mock_collection_fills_all_sources(seeded):
         assert code in values
     runs = models.list_runs(seeded)
     assert {run["source"] for run in runs} == {
-        "dart", "credit", "insurance", "nts", "risk_list", "submission",
+        "dart", "credit", "insurance", "nts", "factory", "procurement",
+        "risk_list", "submission",
     }
     assert all(run["status"] == "ok" for run in runs)
 
@@ -242,8 +243,12 @@ def test_partner_category_can_be_changed(conn):
 
 def test_partner_counts_by_category(seeded):
     counts = models.count_partners_by_category(seeded)
-    assert counts["mold"] == 2
-    assert counts["production"] == 4
+    assert counts["mold"] == sum(
+        1 for row in seed.SAMPLE_PARTNERS if row[2] == "mold"
+    )
+    assert counts["production"] == sum(
+        1 for row in seed.SAMPLE_PARTNERS if row[2] == "production"
+    )
 
 
 def test_category_filter_and_badges(client):
@@ -435,8 +440,9 @@ def test_detail_can_register_submission_and_manual_value(client):
     listing = client.get("/partners/api/partners.json").get_json()
     target = next(item for item in listing["partners"] if item["name"] == "명진검사구")
     assert "dart" not in target["sources"]
+    assert target["id"]
 
-    partner_id = client.get("/partners/?q=명진검사구").status_code and 10
+    partner_id = target["id"]
     response = client.post(
         f"/partners/{partner_id}",
         data={
@@ -612,6 +618,154 @@ def test_same_city_name_in_different_provinces():
     # 광역시는 도(경기)보다 훨씬 남서쪽에 있다.
     assert gwangju_metro[0] < gyeonggi_gwangju[0]
     assert gwangju_metro[1] < gyeonggi_gwangju[1]
+
+
+# --- 계열사 / 변동이력 화면 / 픽토그램 ---------------------------------------
+
+
+def test_affiliates_are_monitored_like_others(seeded):
+    """계열사도 같은 지표·같은 가중치로 채점되어야 한다."""
+    defs = models.list_metric_defs(seeded)
+    period = models.known_periods(seeded, limit=1)[-1]
+    affiliate = next(p for p in models.list_partners(seeded) if p["relation"] == "affiliate")
+    result = score_partner(
+        defs,
+        models.values_as_of(seeded, affiliate["id"], period),
+        models.list_risk_events(seeded, affiliate["id"]),
+    )
+    assert result.score is not None
+    assert affiliate["group_name"]
+
+
+def test_group_members_and_listing(seeded):
+    groups = {row["group_name"]: row["n"] for row in models.list_groups(seeded)}
+    assert groups["한빛그룹"] == 2
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "한빛모터스")
+    siblings = models.group_members(seeded, "한빛그룹", exclude_id=partner["id"])
+    assert [row["name"] for row in siblings] == ["한빛정공"]
+
+
+def test_relation_filter_on_list(client):
+    client.post("/partners/seed", data={"months": "6"})
+    affiliates = table_rows(client.get("/partners/?relation=affiliate"))
+    assert "한빛모터스" in affiliates
+    assert "동성테크" not in affiliates
+
+
+def test_relation_can_be_changed_in_detail(client):
+    client.post("/partners/seed", data={"months": "6"})
+    payload = client.get("/partners/api/partners.json").get_json()
+    target = next(item for item in payload["partners"] if item["name"] == "동성테크")
+    assert target["relation"] == "external"
+
+    client.post(
+        f"/partners/{target['id']}",
+        data={"action": "update_partner", "name": "동성테크",
+              "relation": "affiliate", "group_name": "한빛그룹"},
+    )
+    updated = next(
+        item for item in client.get("/partners/api/partners.json").get_json()["partners"]
+        if item["name"] == "동성테크"
+    )
+    assert updated["relation"] == "affiliate"
+    assert updated["group"] == "한빛그룹"
+
+
+def test_changes_page_filters_and_links(client):
+    client.post("/partners/seed", data={})
+    page = client.get("/partners/changes")
+    assert page.status_code == 200
+    body = page.data.decode()
+    assert "협력사 변동이력" in body
+    assert "/partners/" in body
+
+    # 종류 필터가 목록을 좁힌다.
+    events_only = client.get("/partners/changes?kind=사건")
+    rows = table_rows(events_only)
+    assert rows
+    assert "개요" not in rows.split("</tr>")[0]
+
+    # 없는 조건이면 빈 목록을 알려준다.
+    empty = client.get("/partners/changes?kind=지표&days=7")
+    assert "변동이력이 없습니다" in empty.data.decode() or table_rows(empty)
+
+
+def test_changes_are_not_duplicated_by_seed(conn, tmp_path):
+    """시드가 수집이 남긴 사건을 다시 기록하지 않아야 한다."""
+    connection = models.connect(tmp_path / "dup.db")
+    seed.seed_all(connection, months=12)
+    rows = connection.execute(
+        "SELECT partner_id, kind, title, COALESCE(detail, '') AS detail, COUNT(*) AS n "
+        "FROM change_log GROUP BY partner_id, kind, title, detail HAVING n > 1"
+    ).fetchall()
+    assert rows == []
+    connection.close()
+
+
+def _status_values(status_value, status_text, **codes):
+    """수집기처럼 표시 문구까지 담은 값 묶음."""
+    values = _values(**codes)
+    values["biz_status"] = {
+        "value": status_value, "text_value": status_text,
+        "period": "2026-09", "collected_at": models.now_iso(), "source": "nts",
+    }
+    return values
+
+
+def test_category_headline_prefers_problem_then_representative(conn):
+    defs = models.list_metric_defs(conn)
+    # 문제가 있으면 가장 나쁜 지표를 보여준다.
+    bad = score_partner(defs, _status_values(2, "폐업", plant_area=14000))
+    assert bad.category_headline("기업상태") == "폐업"
+    # 다 정상이면 참고용 면적이 아니라 대표 지표(사업자상태)를 보여준다.
+    good = score_partner(defs, _status_values(0, "계속사업자", plant_area=14000))
+    assert good.category_headline("기업상태") == "계속사업자"
+
+
+def test_category_tip_lists_every_metric(conn):
+    defs = models.list_metric_defs(conn)
+    result = score_partner(defs, _values(debt_ratio=443, current_ratio=57, credit_score=35))
+    tip = result.category_tip("재무")
+    assert "재무 · 경고" in tip
+    assert "부채비율" in tip and "유동비율" in tip and "신용평가 등급" in tip
+    assert "가중 20" in tip  # 가중치도 함께 보여준다
+
+
+def test_worker_gap_is_measured_against_pension(seeded):
+    """공장등록 종업원수와 연금 가입자수의 괴리가 지표로 남는다."""
+    period = models.known_periods(seeded, limit=1)[-1]
+    found = False
+    for partner in models.list_partners(seeded):
+        values = models.values_as_of(seeded, partner["id"], period)
+        if "worker_gap" in values and "plant_workers" in values:
+            found = True
+            assert values["worker_gap"]["value"] is not None
+    assert found
+
+
+def test_factory_cancellation_is_critical(conn):
+    defs = models.list_metric_defs(conn)
+    result = score_partner(defs, _values(factory_status=2, debt_ratio=100))
+    assert result.grade == "E"
+    assert any("공장등록" in reason for reason in result.critical_reasons)
+
+
+def test_public_award_fills_sales_gap_for_small_partner(seeded):
+    """소규모 협력사는 공공 수주가 매출 자리를 메운다."""
+    period = models.known_periods(seeded, limit=1)[-1]
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "명진검사구")
+    values = models.values_as_of(seeded, partner["id"], period)
+    assert "revenue" not in values
+    assert "public_award" in values
+
+
+def test_detail_has_no_duplicate_anchor_ids(client):
+    client.post("/partners/seed", data={"months": "6"})
+    body = client.get("/partners/2").data.decode()
+    import re
+
+    ids = re.findall(r'id="([^"]+)"', body)
+    assert len(ids) == len(set(ids)), [x for x in ids if ids.count(x) > 1]
 
 
 # --- 화면 -------------------------------------------------------------------

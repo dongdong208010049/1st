@@ -1,0 +1,109 @@
+{% extends "partners/base.html" %}
+{% import "partners/_macros.html" as ui %}
+{% block title %}변동이력 · 협력사 종합 모니터링{% endblock %}
+{% block ticker %}{{ ui.ticker_bar(ticker, new_change_count, seen_change_id) }}{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <h2>협력사 변동이력</h2>
+    <span class="tiny muted">{{ history_start }} 이후 · 값이 실제로 바뀐 것만 기록합니다</span>
+  </div>
+
+  <div class="chips" style="margin-bottom:12px">
+    <a class="chip {{ 'on' if not filters.kind }}" href="{{ url_for('partners.changes_view') }}">
+      전체 <span class="num">{{ counts.get('전체', 0) }}</span>
+    </a>
+    {% for kind in ['상태', '사건', '지표', '개요'] %}
+      <a class="chip {{ 'on' if filters.kind == kind }}"
+         href="{{ url_for('partners.changes_view', kind=kind) }}"
+         data-tip="{{ {'상태': '사업자상태·연금 사업장·공장등록 상태가 바뀐 기록', '사건': '새로 확인된 리스크 이벤트(체불·산재·제재·회생·부도·경매)', '지표': '지표의 신호등이 바뀐 기록(값의 미세 변동은 기록하지 않습니다)', '개요': '대표자·주소 등 기업개요가 바뀐 기록'}[kind] }}">
+        {{ ui.icon(change_icons.get(kind, 'plus')) }} {{ kind }}
+        <span class="num">{{ counts.get(kind, 0) }}</span>
+      </a>
+    {% endfor %}
+    <span style="flex:1 1 auto"></span>
+    {% for label, key in [('경고', 'critical'), ('주의', 'warn'), ('개선', 'good')] %}
+      <a class="chip {{ 'on' if filters.severity == key }}"
+         href="{{ url_for('partners.changes_view', severity=key, kind=filters.kind or None) }}">
+        <span class="dot {{ 'red' if key == 'critical' else ('amber' if key == 'warn' else 'green') }}"></span>{{ label }}
+      </a>
+    {% endfor %}
+  </div>
+
+  <form class="filters" method="get" style="margin-bottom:6px">
+    <select name="partner">
+      <option value="">협력사 전체</option>
+      {% for item in partners %}
+        <option value="{{ item.id }}" {% if filters.partner == item.id %}selected{% endif %}>{{ item.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="kind">
+      <option value="">종류 전체</option>
+      {% for kind in ['상태', '사건', '지표', '개요'] %}
+        <option value="{{ kind }}" {% if filters.kind == kind %}selected{% endif %}>{{ kind }}</option>
+      {% endfor %}
+    </select>
+    <select name="days">
+      <option value="">기간 전체</option>
+      {% for days, label in [(7, '최근 7일'), (30, '최근 30일'), (90, '최근 90일'), (365, '최근 1년')] %}
+        <option value="{{ days }}" {% if filters.days == days %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">조회</button>
+    <a class="tiny muted" href="{{ url_for('partners.changes_view') }}">초기화</a>
+  </form>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th><span data-tip="변경의 심각도. 경고=즉시 확인, 주의=지켜보기, 개선=좋아진 변화">신호</span></th>
+        <th><span data-tip="변경 종류. 아이콘에 마우스를 올리면 뜻이 나옵니다">종류</span></th>
+        <th>협력사</th>
+        <th>내용</th>
+        <th><span data-tip="바뀐 값 또는 사건 발생일. 이전 → 이후">변화</span></th>
+        <th><span data-tip="대시보드가 그 변화를 확인한 시각(수집 시점)">기록</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr class="{{ 'row-new' if row.id > seen_change_id }}">
+        <td class="nowrap">
+          <span class="cell" data-tip="{{ {'critical': '경고 — 즉시 확인이 필요한 변화', 'warn': '주의 — 지켜봐야 하는 변화', 'good': '개선 — 좋아진 변화', 'info': '참고'}.get(row.severity, '참고') }}">
+            <span class="dot {{ 'red' if row.severity == 'critical' else ('amber' if row.severity == 'warn' else ('green' if row.severity == 'good' else 'none')) }}"></span>
+          </span>
+        </td>
+        <td class="nowrap">
+          <span class="cell" data-tip="{{ row.kind }}">{{ ui.icon(change_icons.get(row.kind, 'plus')) }}<span class="tiny">{{ row.kind }}</span></span>
+        </td>
+        <td class="nowrap">
+          <a href="{{ url_for('partners.detail', partner_id=row.partner_id, _anchor=row.anchor or None) }}">{{ row.partner_name }}</a>
+          {{ ui.category_badge(row.category_code, category_labels, cat_class) }}
+          {% if row.relation == 'affiliate' %}<span class="tag ok" data-tip="계열사{% if row.group_name %} · {{ row.group_name }}{% endif %}">계열</span>{% endif %}
+        </td>
+        <td class="small">{{ row.title }}</td>
+        <td class="small muted num">{{ row.detail or '—' }}</td>
+        <td class="tiny muted nowrap num">{{ row.created_at[:16]|replace('T', ' ') }}</td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr><td colspan="6" class="muted" style="padding:28px; text-align:center">조건에 맞는 변동이력이 없습니다.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+
+  {% if filters.page > 1 or has_next %}
+  <div class="filters" style="margin-top:12px; justify-content:center">
+    {% if filters.page > 1 %}
+      <a class="chip" href="{{ url_for('partners.changes_view', page=filters.page - 1, kind=filters.kind or None, severity=filters.severity or None, partner=filters.partner or None, days=filters.days or None) }}">← 이전</a>
+    {% endif %}
+    <span class="tiny muted">{{ filters.page }} 페이지</span>
+    {% if has_next %}
+      <a class="chip" href="{{ url_for('partners.changes_view', page=filters.page + 1, kind=filters.kind or None, severity=filters.severity or None, partner=filters.partner or None, days=filters.days or None) }}">다음 →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

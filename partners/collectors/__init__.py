@@ -5,8 +5,10 @@ from ..scoring import score_metric, signal_of
 from .base import Collector, CollectorError, CollectResult, Event, ProfileFact, Reading
 from .credit import CreditCollector
 from .dart import DartCollector
+from .factory import FactoryCollector, fill_worker_gap
 from .insurance import InsuranceCollector, fill_changes
 from .nts import NtsCollector
+from .procurement import ProcurementCollector
 from .risk_list import RiskListCollector
 from .submission import SubmissionCollector
 
@@ -15,6 +17,8 @@ COLLECTORS: tuple[Collector, ...] = (
     CreditCollector(),
     InsuranceCollector(),
     NtsCollector(),
+    FactoryCollector(),
+    ProcurementCollector(),
     RiskListCollector(),
     SubmissionCollector(),
 )
@@ -98,6 +102,14 @@ def run_collection(conn, periods: list[str], sources: list[str] | None = None) -
                     for code in ("headcount", "avg_pay")
                 }
                 for reading in fill_changes(history):
+                    models.put_metric_value(
+                        conn, partner["id"], reading.code, reading.period,
+                        reading.value, reading.text, collector.source,
+                    )
+
+            # 공장등록 종업원수와 연금 가입자수의 괴리는 두 소스가 다 모인 뒤 계산한다.
+            if collector.source == "factory":
+                for reading in fill_worker_gap(conn, models, partner["id"], periods):
                     models.put_metric_value(
                         conn, partner["id"], reading.code, reading.period,
                         reading.value, reading.text, collector.source,

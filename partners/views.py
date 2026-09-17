@@ -3,7 +3,7 @@
 import math
 import os
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from flask import (
@@ -31,9 +31,17 @@ SEEN_COOKIE_MAX_AGE = 60 * 60 * 24 * 90
 
 # 지도 마커 모양(업종 식별). 색은 신호등이 쓰므로 모양이 업종을 구분한다.
 MARKER_SHAPES = ("circle", "square", "triangle", "diamond", "hexagon", "pentagon")
+
+# 카테고리·변경 종류 픽토그램(글을 줄이고 아이콘으로 읽게 한다)
+CATEGORY_ICONS = {
+    "기업상태": "building", "재무": "coins", "매출": "trend",
+    "인원": "people", "경영환경": "shield",
+}
+CHANGE_ICONS = {"상태": "building", "지표": "trend", "사건": "shield", "개요": "pencil", "신규": "plus"}
 MAP_WIDTH, MAP_HEIGHT = 350, 460
 TICKER_LIMIT = 24
 CHART_YEARS = 3
+CHART_WIDTH, CHART_PLOT_HEIGHT = 420, 150
 # 리스트의 카테고리 컬럼 순서. 지표를 추가하면 해당 카테고리 컬럼에 자동으로 붙는다.
 CATEGORY_ORDER = ("기업상태", "재무", "매출", "인원", "경영환경")
 
@@ -226,6 +234,8 @@ def index():
     query = (request.args.get("q") or "").strip()
     category = request.args.get("category") or ""
     coverage = request.args.get("coverage") or ""
+    relation = request.args.get("relation") or ""
+    group = request.args.get("group") or ""
     signal = request.args.get("signal") or ""
     grade = request.args.get("grade") or ""
     manager = request.args.get("manager") or ""
@@ -243,6 +253,10 @@ def index():
         # 'none'은 미분류 협력사만 본다.
         wanted = "" if category == "none" else category
         rows = [row for row in rows if (row["partner"]["category_code"] or "") == wanted]
+    if relation:
+        rows = [row for row in rows if row["partner"]["relation"] == relation]
+    if group:
+        rows = [row for row in rows if (row["partner"]["group_name"] or "") == group]
     if coverage == "weak":
         rows = [row for row in rows if _is_weak(row)]
     if signal:
@@ -261,6 +275,7 @@ def index():
         "green": sum(1 for row in all_rows if row["score"].signal == "green"),
         "critical": sum(1 for row in all_rows if row["score"].critical_reasons),
         "weak": sum(1 for row in all_rows if _is_weak(row)),
+        "affiliate": sum(1 for row in all_rows if row["partner"]["relation"] == "affiliate"),
         "stale": sum(1 for row in all_rows if row["score"].stale),
     }
     managers = sorted({row["partner"]["manager"] for row in all_rows if row["partner"]["manager"]})
@@ -290,7 +305,12 @@ def index():
         filters={
             "q": query, "category": category, "coverage": coverage, "signal": signal,
             "grade": grade, "manager": manager, "order": order,
+            "relation": relation, "group": group,
         },
+        relation_labels=models.RELATION_LABELS,
+        groups=models.list_groups(conn),
+        category_icons=CATEGORY_ICONS,
+        change_icons=CHANGE_ICONS,
         category_labels=models.category_labels(conn),
         category_options=categories_meta,
         category_summary=category_summary,
@@ -421,6 +441,8 @@ def detail(partner_id: int):
                 partner_id,
                 name=(request.form.get("name") or partner["name"]).strip(),
                 category_code=(request.form.get("category_code") or "").strip() or None,
+                relation=(request.form.get("relation") or partner["relation"]).strip(),
+                group_name=(request.form.get("group_name") or "").strip() or None,
                 industry=(request.form.get("industry") or "").strip() or None,
                 manager=(request.form.get("manager") or "").strip() or None,
                 tier=(request.form.get("tier") or "").strip() or None,
@@ -471,6 +493,13 @@ def detail(partner_id: int):
         category_options=models.list_categories(conn),
         category_labels=models.category_labels(conn),
         cat_class=_category_classes(conn),
+        siblings=(
+            models.group_members(conn, partner["group_name"], partner_id)
+            if partner["group_name"] else []
+        ),
+        relation_labels=models.RELATION_LABELS,
+        category_icons=CATEGORY_ICONS,
+        change_icons=CHANGE_ICONS,
         submissions=models.list_submissions(conn, partner_id),
         doc_types=models.REQUIRED_DOC_TYPES + models.OPTIONAL_DOC_TYPES,
         metric_defs=defs,
@@ -534,22 +563,52 @@ def yearly_chart(conn, partner_id: int, period: str, years: int = CHART_YEARS) -
         bars = [{"year": year, "value": by_year.get(year)} for year in wanted]
         if not any(bar["value"] is not None for bar in bars):
             continue
+
+        # 막대 기하는 서버에서 계산해 템플릿은 그리기만 한다.
         top = max(bar["value"] for bar in bars if bar["value"] is not None) or 1
-        for bar in bars:
-            bar["ratio"] = (bar["value"] / top) if bar["value"] is not None else 0.0
+        count = len(bars)
+        slot = CHART_WIDTH / count
+        bar_width = min(56.0, slot * 0.52)
+        for index, bar in enumerate(bars):
+            ratio = (bar["value"] / top) if bar["value"] is not None else 0.0
+            height = max(3.0, ratio * CHART_PLOT_HEIGHT) if bar["value"] is not None else 6.0
+            bar["ratio"] = ratio
+            bar["w"] = round(bar_width, 1)
+            bar["x"] = round(slot * (index + 0.5) - bar_width / 2, 1)
+            bar["h"] = round(height, 1)
+            bar["y"] = round(CHART_PLOT_HEIGHT - height, 1)
+            bar["cx"] = round(slot * (index + 0.5), 1)
+            bar["latest"] = index == count - 1
+            previous = bars[index - 1]["value"] if index else None
+            bar["yoy"] = (
+                round((bar["value"] - previous) / abs(previous) * 100, 1)
+                if index and previous and bar["value"] is not None else None
+            )
+
         first, last = bars[0]["value"], bars[-1]["value"]
+        span = count - 1
+        cagr = None
+        if first and last is not None and first > 0 and last > 0 and span:
+            cagr = round(((last / first) ** (1 / span) - 1) * 100, 1)
         return {
             "code": code,
             "label": label,
             "unit": unit,
             "note": note,
             "bars": bars,
+            "width": CHART_WIDTH,
+            "plot_height": CHART_PLOT_HEIGHT,
             "change": (
                 round((last - first) / abs(first) * 100, 1)
                 if first and last is not None else None
             ),
+            "cagr": cagr,
         }
-    return {"code": None, "label": "매출액", "unit": "억원", "note": "자료 없음", "bars": [], "change": None}
+    return {
+        "code": None, "label": "매출액", "unit": "억원", "note": "자료 없음",
+        "bars": [], "change": None, "cagr": None,
+        "width": CHART_WIDTH, "plot_height": CHART_PLOT_HEIGHT,
+    }
 
 
 def _normalize(values: list[float]) -> list[float]:
@@ -558,6 +617,53 @@ def _normalize(values: list[float]) -> list[float]:
     if high == low:
         return [50.0 for _ in values]
     return [(value - low) / (high - low) * 100 for value in values]
+
+
+@bp.route("/changes")
+def changes_view():
+    """협력사 변동이력 전용 화면. 픽토그램·신호등으로 읽고, 줄을 누르면 상세로 간다."""
+    conn = get_conn()
+    partner_id = request.args.get("partner", type=int)
+    kind = request.args.get("kind") or ""
+    severity = request.args.get("severity") or ""
+    days = request.args.get("days", type=int) or 0
+    page = max(request.args.get("page", type=int) or 1, 1)
+    per_page = 60
+
+    since = None
+    if days:
+        since = (date.today() - timedelta(days=days)).isoformat()
+
+    rows = models.search_changes(
+        conn, partner_id=partner_id, kind=kind or None, severity=severity or None,
+        since=since, limit=per_page + 1, offset=(page - 1) * per_page,
+    )
+    has_next = len(rows) > per_page
+    seen_id = _seen_change_id()
+
+    response = make_response(render_template(
+        "partners/changes.html",
+        rows=rows[:per_page],
+        counts=models.count_changes(conn),
+        partners=models.list_partners(conn),
+        category_labels=models.category_labels(conn),
+        cat_class=_category_classes(conn),
+        change_icons=CHANGE_ICONS,
+        relation_labels=models.RELATION_LABELS,
+        filters={
+            "partner": partner_id, "kind": kind, "severity": severity,
+            "days": days, "page": page,
+        },
+        has_next=has_next,
+        seen_change_id=seen_id,
+        ticker=models.list_changes(conn, limit=TICKER_LIMIT),
+        new_change_count=sum(row["n"] for row in models.changed_partner_ids(conn, seen_id).values()),
+        history_start=models.HISTORY_START,
+    ))
+    response.set_cookie(
+        SEEN_COOKIE, str(models.max_change_id(conn)), max_age=SEEN_COOKIE_MAX_AGE, samesite="Lax"
+    )
+    return response
 
 
 @bp.route("/settings", methods=["GET", "POST"])
@@ -643,6 +749,8 @@ def settings():
                 name=name,
                 biz_no=biz_no,
                 category_code=(request.form.get("category_code") or "").strip() or None,
+                relation=(request.form.get("relation") or "external").strip(),
+                group_name=(request.form.get("group_name") or "").strip() or None,
                 industry=(request.form.get("industry") or "").strip() or None,
                 manager=(request.form.get("manager") or "").strip() or None,
                 tier=(request.form.get("tier") or "").strip() or None,
@@ -682,6 +790,8 @@ def settings():
         partner_categories=models.list_categories(conn, active_only=False),
         category_counts=models.count_partners_by_category(conn),
         profile_fields=models.list_profile_fields(conn, active_only=False),
+        groups=models.list_groups(conn),
+        relation_labels=models.RELATION_LABELS,
         history_start=models.HISTORY_START,
     )
 
@@ -727,8 +837,11 @@ def api_partners():
         code = row["partner"]["category_code"]
         payload.append(
             {
+                "id": row["partner"]["id"],
                 "name": row["partner"]["name"],
                 "biz_no": row["partner"]["biz_no"],
+                "relation": row["partner"]["relation"],
+                "group": row["partner"]["group_name"],
                 "category_code": code,
                 "category": labels.get(code),
                 "grade": result.grade,

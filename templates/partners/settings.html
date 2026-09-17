@@ -102,6 +102,14 @@
         <option value="{{ item.code }}">{{ item.label }}</option>
       {% endfor %}
     </select>
+    <select name="relation">
+      {% for key, label in relation_labels.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+    </select>
+    <input type="text" name="group_name" placeholder="기업집단(계열)" style="width:120px"
+           list="group-list">
+    <datalist id="group-list">
+      {% for item in groups %}<option value="{{ item.group_name }}"></option>{% endfor %}
+    </datalist>
     <input type="text" name="industry" placeholder="세부 업종" style="width:120px">
     <input type="text" name="tier" placeholder="구분" style="width:90px">
     <input type="text" name="manager" placeholder="담당자" style="width:100px">
