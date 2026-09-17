@@ -67,6 +67,38 @@ CREATE TABLE IF NOT EXISTS risk_events (
     UNIQUE (partner_id, kind, title, occurred_on)
 );
 
+CREATE TABLE IF NOT EXISTS profile_fields (
+    code        TEXT PRIMARY KEY,          -- address, ceo_name, established_on ...
+    label       TEXT NOT NULL,             -- 주소, 대표자, 설립일 ...
+    kind        TEXT NOT NULL DEFAULT 'text',   -- text | date | number
+    source      TEXT,
+    active      INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 100
+);
+
+-- 개요는 덮어쓰지 않고 쌓는다. 대표자 변경·본점 이전 이력이 그대로 남는다.
+CREATE TABLE IF NOT EXISTS profile_values (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner_id  INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+    field_code  TEXT NOT NULL REFERENCES profile_fields(code) ON DELETE CASCADE,
+    value       TEXT,
+    valid_from  TEXT NOT NULL,             -- 'YYYY-MM-DD' 확인일
+    source      TEXT,
+    recorded_at TEXT NOT NULL
+);
+
+-- 뉴스 티커와 '변경 강조'의 원천. 수집에서 값이 실제로 바뀔 때만 쌓인다.
+CREATE TABLE IF NOT EXISTS change_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner_id  INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,             -- 상태 | 사건 | 지표 | 개요 | 신규
+    title       TEXT NOT NULL,
+    detail      TEXT,
+    severity    TEXT NOT NULL DEFAULT 'info',   -- info | warn | critical | good
+    anchor      TEXT,                      -- 상세 화면 앵커(#finance 등)
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS submissions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     partner_id   INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
@@ -91,7 +123,13 @@ CREATE TABLE IF NOT EXISTS collection_runs (
 CREATE INDEX IF NOT EXISTS idx_values_partner ON metric_values(partner_id, period);
 CREATE INDEX IF NOT EXISTS idx_events_partner ON risk_events(partner_id, occurred_on);
 CREATE INDEX IF NOT EXISTS idx_submissions_partner ON submissions(partner_id, submitted_on);
+CREATE INDEX IF NOT EXISTS idx_profile_values ON profile_values(partner_id, field_code, valid_from);
+CREATE INDEX IF NOT EXISTS idx_change_log ON change_log(id DESC);
 """
+
+
+# 현황 이력은 2023년 1월부터 관리한다(폐업·휴업 이력 포함).
+HISTORY_START = "2023-01"
 
 
 def now_iso() -> str:
@@ -397,3 +435,187 @@ def shift_period(period: str, months: int) -> str:
 
 def recent_periods(period: str, count: int) -> list[str]:
     return [shift_period(period, -offset) for offset in range(count - 1, -1, -1)]
+
+
+def months_between(from_period: str, to_period: str) -> int:
+    from_year, from_month = (int(part) for part in from_period.split("-"))
+    to_year, to_month = (int(part) for part in to_period.split("-"))
+    return (to_year * 12 + to_month) - (from_year * 12 + from_month)
+
+
+def history_periods(until: str | None = None, start: str = HISTORY_START) -> list[str]:
+    """이력 관리 시작(2023-01)부터 기준월까지의 모든 기간."""
+    until = until or current_period()
+    span = months_between(start, until) + 1
+    return [shift_period(start, offset) for offset in range(max(span, 1))]
+
+
+# --- 기업개요(이력형) ----------------------------------------------------------
+
+
+# 개요 항목의 기본 표시명. 수집기가 새 코드를 들고 오면 이 이름으로 자동 등록된다.
+DEFAULT_PROFILE_LABELS = {
+    "address": ("주소", "text", 10),
+    "ceo_name": ("대표자", "text", 20),
+    "established_on": ("설립일", "date", 30),
+    "main_product": ("주요 생산품", "text", 40),
+    "phone": ("전화", "text", 50),
+    "homepage": ("홈페이지", "text", 60),
+    "latitude": ("위도", "number", 90),
+    "longitude": ("경도", "number", 91),
+}
+
+
+def ensure_profile_field(conn: sqlite3.Connection, code: str) -> None:
+    row = conn.execute("SELECT 1 FROM profile_fields WHERE code = ?", (code,)).fetchone()
+    if row:
+        return
+    label, kind, order = DEFAULT_PROFILE_LABELS.get(code, (code, "text", 100))
+    conn.execute(
+        "INSERT INTO profile_fields (code, label, kind, sort_order) VALUES (?, ?, ?, ?)",
+        (code, label, kind, order),
+    )
+
+
+def upsert_profile_field(conn: sqlite3.Connection, **fields) -> None:
+    columns = ("code", "label", "kind", "source", "active", "sort_order")
+    values = {key: fields.get(key) for key in columns}
+    values["kind"] = values.get("kind") or "text"
+    raw_active = fields.get("active", 1)
+    values["active"] = 0 if raw_active in (0, False, "0", "off", "false") else 1
+    values["sort_order"] = int(values.get("sort_order") or 100)
+    conn.execute(
+        f"INSERT INTO profile_fields ({', '.join(columns)}) "
+        f"VALUES ({', '.join(':' + c for c in columns)}) "
+        "ON CONFLICT(code) DO UPDATE SET "
+        + ", ".join(f"{c} = excluded.{c}" for c in columns if c != "code"),
+        values,
+    )
+    conn.commit()
+
+
+def list_profile_fields(conn: sqlite3.Connection, active_only: bool = True) -> list[sqlite3.Row]:
+    query = "SELECT * FROM profile_fields"
+    if active_only:
+        query += " WHERE active = 1"
+    query += " ORDER BY sort_order, code"
+    return conn.execute(query).fetchall()
+
+
+def put_profile_value(
+    conn: sqlite3.Connection,
+    partner_id: int,
+    field_code: str,
+    value: str | None,
+    valid_from: str | None = None,
+    source: str | None = None,
+) -> str | None:
+    """값이 실제로 바뀔 때만 이력을 추가하고, 바뀌었으면 '이전 값'을 돌려준다."""
+    ensure_profile_field(conn, field_code)
+    current = latest_profile_value(conn, partner_id, field_code)
+    if current is not None and (current["value"] or "") == (value or ""):
+        return None
+    conn.execute(
+        "INSERT INTO profile_values (partner_id, field_code, value, valid_from, source, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (partner_id, field_code, value, valid_from or date.today().isoformat(), source, now_iso()),
+    )
+    return (current["value"] if current else None) or ""
+
+
+def latest_profile_value(conn: sqlite3.Connection, partner_id: int, field_code: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM profile_values WHERE partner_id = ? AND field_code = ? "
+        "ORDER BY valid_from DESC, id DESC LIMIT 1",
+        (partner_id, field_code),
+    ).fetchone()
+
+
+def profile_snapshot(conn: sqlite3.Connection, partner_id: int) -> dict[str, sqlite3.Row]:
+    rows = conn.execute(
+        "SELECT v.* FROM profile_values v "
+        "JOIN (SELECT field_code, MAX(valid_from) AS valid_from FROM profile_values "
+        "      WHERE partner_id = ? GROUP BY field_code) latest "
+        "  ON v.field_code = latest.field_code AND v.valid_from = latest.valid_from "
+        "WHERE v.partner_id = ? GROUP BY v.field_code",
+        (partner_id, partner_id),
+    ).fetchall()
+    return {row["field_code"]: row for row in rows}
+
+
+def profile_history(conn: sqlite3.Connection, partner_id: int, field_code: str | None = None) -> list[sqlite3.Row]:
+    if field_code:
+        return conn.execute(
+            "SELECT p.*, f.label FROM profile_values p JOIN profile_fields f ON f.code = p.field_code "
+            "WHERE p.partner_id = ? AND p.field_code = ? ORDER BY p.valid_from DESC, p.id DESC",
+            (partner_id, field_code),
+        ).fetchall()
+    return conn.execute(
+        "SELECT p.*, f.label FROM profile_values p JOIN profile_fields f ON f.code = p.field_code "
+        "WHERE p.partner_id = ? ORDER BY p.valid_from DESC, p.id DESC LIMIT 50",
+        (partner_id,),
+    ).fetchall()
+
+
+# --- 변경 로그(뉴스 티커 / 변경 강조) -----------------------------------------
+
+
+def add_change(
+    conn: sqlite3.Connection,
+    partner_id: int,
+    kind: str,
+    title: str,
+    detail: str | None = None,
+    severity: str = "info",
+    anchor: str | None = None,
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO change_log (partner_id, kind, title, detail, severity, anchor, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (partner_id, kind, title, detail, severity, anchor, now_iso()),
+    )
+    return int(cursor.lastrowid)
+
+
+def list_changes(conn: sqlite3.Connection, limit: int = 40, since_id: int = 0) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT c.*, p.name AS partner_name, p.category_code FROM change_log c "
+        "JOIN partners p ON p.id = c.partner_id "
+        "WHERE c.id > ? ORDER BY c.id DESC LIMIT ?",
+        (since_id, limit),
+    ).fetchall()
+
+
+def max_change_id(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) AS n FROM change_log").fetchone()
+    return int(row["n"])
+
+
+def changed_partner_ids(conn: sqlite3.Connection, since_id: int) -> dict[int, sqlite3.Row]:
+    """마지막으로 본 시점 이후 바뀐 협력사. 리스트에서 한 번 강조하는 데 쓴다."""
+    rows = conn.execute(
+        "SELECT partner_id, COUNT(*) AS n, MAX(severity) AS severity, MAX(title) AS title "
+        "FROM change_log WHERE id > ? GROUP BY partner_id",
+        (since_id,),
+    ).fetchall()
+    return {int(row["partner_id"]): row for row in rows}
+
+
+# --- 사업자상태 이력(폐업 이력 확인) ------------------------------------------
+
+
+def status_timeline(conn: sqlite3.Connection, partner_id: int, metric_code: str = "biz_status") -> list[dict]:
+    """상태가 바뀐 구간만 뽑는다. 폐업→재개업 같은 이력도 그대로 보인다."""
+    rows = conn.execute(
+        "SELECT period, value, text_value FROM metric_values "
+        "WHERE partner_id = ? AND metric_code = ? ORDER BY period",
+        (partner_id, metric_code),
+    ).fetchall()
+    timeline: list[dict] = []
+    for row in rows:
+        label = row["text_value"] or str(row["value"])
+        if timeline and timeline[-1]["label"] == label:
+            timeline[-1]["until"] = row["period"]
+            continue
+        timeline.append({"since": row["period"], "until": row["period"], "label": label, "value": row["value"]})
+    return timeline

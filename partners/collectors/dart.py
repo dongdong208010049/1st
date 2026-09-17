@@ -8,9 +8,12 @@
 
 import random
 
-from .base import Collector, CollectResult, CollectorError, Reading, get_json, to_float
+from .base import (
+    Collector, CollectResult, CollectorError, ProfileFact, Reading, get_json, to_float,
+)
 
 DART_ENDPOINT = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
+DART_COMPANY_ENDPOINT = "https://opendart.fss.or.kr/api/company.json"
 ANNUAL_REPORT_CODE = "11011"  # 사업보고서
 
 # 재무제표 계정명 → 내부 키
@@ -74,7 +77,22 @@ class DartCollector(Collector):
                 continue
             previous = accounts_by_year.get(year - 1, {})
             readings.extend(_derive(period, accounts, previous))
-        return CollectResult(readings=readings)
+
+        # 기업개요(대표자·본점 주소·설립일)는 별도 엔드포인트다.
+        profiles: list[ProfileFact] = []
+        overview = get_json(
+            DART_COMPANY_ENDPOINT,
+            {"crtfc_key": os.environ["DART_API_KEY"], "corp_code": corp_code},
+        )
+        if overview.get("status") == "000":
+            profiles = [
+                ProfileFact("ceo_name", (overview.get("ceo_nm") or "").strip() or None),
+                ProfileFact("address", (overview.get("adres") or "").strip() or None),
+                ProfileFact("established_on", _as_date(overview.get("est_dt"))),
+                ProfileFact("homepage", (overview.get("hm_url") or "").strip() or None),
+                ProfileFact("phone", (overview.get("phn_no") or "").strip() or None),
+            ]
+        return CollectResult(readings=readings, profiles=[p for p in profiles if p.value])
 
     def collect_mock(self, partner, periods: list[str], conn=None) -> CollectResult:
         rng = random.Random(f"dart:{partner['biz_no']}")
@@ -92,6 +110,12 @@ class DartCollector(Collector):
             profile, rng.uniform(-38, -22)
         )
 
+        ceo = _mock_ceo(rng)
+        profiles = [
+            ProfileFact("ceo_name", ceo),
+            ProfileFact("established_on", f"{rng.randint(1988, 2012)}-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"),
+        ]
+
         readings: list[Reading] = []
         for index, period in enumerate(periods):
             step = index / max(len(periods) - 1, 1)
@@ -107,7 +131,15 @@ class DartCollector(Collector):
                     Reading(period, "equity_impairment", round(impairment * (1 + step), 1)),
                 ]
             )
-        return CollectResult(readings=readings)
+        return CollectResult(readings=readings, profiles=profiles)
+
+
+def _as_date(raw) -> str | None:
+    """'19980312' → '1998-03-12'."""
+    digits = str(raw or "").strip()
+    if len(digits) != 8 or not digits.isdigit():
+        return None
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
 
 
 def _parse_accounts(rows: list[dict]) -> dict[str, float]:
@@ -120,6 +152,14 @@ def _parse_accounts(rows: list[dict]) -> dict[str, float]:
         if amount is not None:
             accounts[key] = amount
     return accounts
+
+
+_MOCK_SURNAMES = ("김", "이", "박", "최", "정", "강", "조", "윤", "장", "임")
+_MOCK_GIVEN = ("영수", "철수", "민호", "정호", "성곤", "태원", "재현", "경수", "동현", "상우")
+
+
+def _mock_ceo(rng) -> str:
+    return rng.choice(_MOCK_SURNAMES) + rng.choice(_MOCK_GIVEN)
 
 
 def _derive(period: str, accounts: dict[str, float], previous: dict[str, float]) -> list[Reading]:

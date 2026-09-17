@@ -19,7 +19,7 @@ import os
 import random
 from pathlib import Path
 
-from .base import Collector, CollectResult, Event, Reading
+from .base import Collector, CollectResult, Event, Reading, clamp_date
 
 DEFAULT_CSV_PATH = Path("data/risk_list.csv")
 
@@ -99,7 +99,7 @@ class RiskListCollector(Collector):
                 Event(
                     kind=kind,
                     title=title,
-                    occurred_on=f"{period}-{rng.randint(5, 25):02d}",
+                    occurred_on=clamp_date(f"{period}-{rng.randint(5, 25):02d}"),
                     severity=SEVERITY_BY_KIND.get(kind, "warn"),
                 )
             )

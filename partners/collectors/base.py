@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import date
 
 HTTP_TIMEOUT_SECONDS = 15
 
@@ -40,9 +41,19 @@ class Event:
 
 
 @dataclass
+class ProfileFact:
+    """기업개요 항목 하나(주소·대표자·설립일 등). 값이 바뀌면 이력으로 쌓인다."""
+
+    code: str
+    value: str | None
+    valid_from: str | None = None
+
+
+@dataclass
 class CollectResult:
     readings: list[Reading] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
+    profiles: list[ProfileFact] = field(default_factory=list)
 
 
 class Collector:
@@ -95,6 +106,12 @@ def post_json(url: str, payload: dict, params: dict | None = None) -> dict:
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise CollectorError(f"{url} 호출 실패: {exc}") from exc
+
+
+def clamp_date(value: str) -> str:
+    """오늘 이후 날짜는 오늘로 맞춘다(미래에 일어난 사건은 없다)."""
+    today = date.today().isoformat()
+    return min(value, today) if value else today
 
 
 def to_float(raw) -> float | None:

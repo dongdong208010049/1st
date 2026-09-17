@@ -33,6 +33,20 @@ METRIC_DEFS = (
     ("doc_freshness", "경영환경", "자료 제출 경과", "개월", "lower_better", 3, 15, 10, "submission", 54),
 )
 
+# 기업개요 항목 기본값. 화면(설정)에서 추가할 수 있고, 수집기가 새 코드를 들고 오면
+# models.DEFAULT_PROFILE_LABELS를 보고 자동 등록된다.
+# (code, label, kind, source, sort_order)
+PROFILE_FIELDS = (
+    ("address", "주소", "text", "insurance", 10),
+    ("ceo_name", "대표자", "text", "dart", 20),
+    ("established_on", "설립일", "date", "dart", 30),
+    ("main_product", "주요 생산품", "text", "manual", 40),
+    ("phone", "전화", "text", "dart", 50),
+    ("homepage", "홈페이지", "text", "dart", 60),
+    ("latitude", "위도", "number", "manual", 90),
+    ("longitude", "경도", "number", "manual", 91),
+)
+
 # 업(業) 분류 기본값. 화면(설정)에서 추가·수정할 수 있고, 여기에 행을 더해도 된다.
 # (code, label, sort_order)
 CATEGORIES = (
@@ -93,6 +107,13 @@ def seed_metric_defs(conn) -> None:
         )
 
 
+def seed_profile_fields(conn) -> None:
+    for code, label, kind, source, order in PROFILE_FIELDS:
+        models.upsert_profile_field(
+            conn, code=code, label=label, kind=kind, source=source, active=1, sort_order=order
+        )
+
+
 def seed_categories(conn) -> None:
     for code, label, sort_order in CATEGORIES:
         models.upsert_category(conn, code, label, sort_order)
@@ -131,12 +152,101 @@ def seed_sample_submissions(conn) -> None:
         )
 
 
-def seed_all(conn, months: int = 12) -> None:
-    """지표 정의 + 샘플 협력사 + 최근 12개월 수집값을 한 번에 채운다."""
+# (biz_no, 주요 생산품)
+SAMPLE_PRODUCTS = (
+    ("1048201234", "프레스 금형 (차체 패널)"),
+    ("2208102345", "커넥터 하우징"),
+    ("3138503456", "배전반 어셈블리"),
+    ("4028104567", "엔지니어링 플라스틱 컴파운드"),
+    ("5178205678", "사출 금형"),
+    ("6068306789", "반도체 검사 소켓"),
+    ("7098407890", "용접 지그"),
+    ("8108508901", "프레스 가공품"),
+    ("9218609012", "조립 지그·치공구"),
+    ("1338709123", "검사구·게이지"),
+)
+
+# 개요 변경 이력 샘플. (biz_no, field, 이전값, 이전 확인일, 새값, 새 확인일)
+SAMPLE_PROFILE_HISTORY = (
+    ("1048201234", "ceo_name", "김성곤", "2023-02-10", "박영수", "2026-04-02"),
+    ("3138503456", "address", "경상남도 김해시 주촌면 골든루트로 12", "2023-03-15",
+     "경상남도 김해시 주촌면 골든루트로 210", "2026-06-11"),
+)
+
+
+# 공시가 없는 소규모 협력사의 대표자·설립일은 사업자등록증·등기부를 징구해 손으로 넣는다.
+SAMPLE_MANUAL_PROFILE = (
+    ("9218609012", "ceo_name", "정우진", "2023-01-20"),
+    ("9218609012", "established_on", "2009-05-14", "2023-01-20"),
+    ("1338709123", "ceo_name", "명동현", "2023-01-20"),
+    ("1338709123", "established_on", "2013-11-02", "2023-01-20"),
+)
+
+
+def seed_profile_samples(conn) -> None:
+    for biz_no, field, value, valid_from in SAMPLE_MANUAL_PROFILE:
+        partner = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
+        if partner:
+            models.put_profile_value(conn, partner["id"], field, value, valid_from, "manual")
+    for biz_no, product in SAMPLE_PRODUCTS:
+        partner = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
+        if partner:
+            models.put_profile_value(conn, partner["id"], "main_product", product, "2023-01-01", "manual")
+    for biz_no, field, old_value, old_on, new_value, new_on in SAMPLE_PROFILE_HISTORY:
+        partner = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
+        if not partner:
+            continue
+        models.put_profile_value(conn, partner["id"], field, old_value, old_on, "seed")
+        models.put_profile_value(conn, partner["id"], field, new_value, new_on, "seed")
+        models.add_change(
+            conn, partner["id"], "개요",
+            f"{models.DEFAULT_PROFILE_LABELS.get(field, (field,))[0]} 변경",
+            f"{old_value} → {new_value}", severity="warn", anchor="overview",
+        )
+    conn.commit()
+
+
+def seed_changes(conn, recent_months: int = 4) -> None:
+    """최근 사건·상태 변화를 티커용 변경 로그로 옮긴다.
+
+    첫 적재는 '변경'이 아니라서 change_log가 비는데, 화면 확인용으로 최근 몇 달의
+    실제 사건과 상태 전환을 옮겨 담는다. 운영 중에는 수집이 알아서 쌓는다.
+    """
+    floor = models.shift_period(models.current_period(), -recent_months)
+    for partner in models.list_partners(conn):
+        for event in models.list_risk_events(conn, partner["id"]):
+            if event["occurred_on"][:7] < floor:
+                continue
+            models.add_change(
+                conn, partner["id"], "사건", f"{event['kind']}: {event['title']}",
+                event["occurred_on"], severity=event["severity"], anchor="events",
+            )
+        for code in ("biz_status", "pension_status"):
+            timeline = models.status_timeline(conn, partner["id"], code)
+            for entry in timeline[1:]:
+                if entry["since"] < floor:
+                    continue
+                models.add_change(
+                    conn, partner["id"], "상태", f"{entry['label']}로 변경",
+                    f"{entry['since']} 확인",
+                    severity="critical" if (entry["value"] or 0) >= 1 else "good",
+                    anchor="overview",
+                )
+    conn.commit()
+
+
+def seed_all(conn, months: int | None = None, start: str = models.HISTORY_START) -> None:
+    """지표 정의 + 샘플 협력사 + 이력(기본 2023-01~현재) 수집값을 한 번에 채운다."""
     models.init_db(conn)
     seed_categories(conn)
+    seed_profile_fields(conn)
     seed_metric_defs(conn)
     seed_sample_partners(conn)
     seed_sample_submissions(conn)
-    periods = models.recent_periods(models.current_period(), months)
+    seed_profile_samples(conn)
+    periods = (
+        models.recent_periods(models.current_period(), months)
+        if months else models.history_periods(start=start)
+    )
     run_collection(conn, periods)
+    seed_changes(conn)

@@ -17,7 +17,7 @@ import os
 import random
 from pathlib import Path
 
-from .base import Collector, CollectResult, Event, Reading
+from .base import Collector, CollectResult, Event, Reading, clamp_date
 
 DEFAULT_CSV_PATH = Path("data/credit_grades.csv")
 
@@ -92,7 +92,7 @@ class CreditCollector(Collector):
                 Event(
                     kind="신용등급",
                     title=f"신용등급 하락 {grade} → {downgraded}",
-                    occurred_on=f"{recent}-20",
+                    occurred_on=clamp_date(f"{recent}-20"),
                     severity="critical" if GRADE_SCORES[downgraded] <= GRADE_SCORES["CCC"] else "warn",
                 )
             )

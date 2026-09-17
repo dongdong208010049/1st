@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 import app as app_module
-from partners import models, seed
+from partners import geo, models, seed
 from partners.collectors import run_collection
 from partners.scoring import grade_of, score_metric, score_partner, signal_of
 
@@ -13,6 +13,7 @@ def conn(tmp_path):
     connection = models.connect(tmp_path / "partners.db")
     models.init_db(connection)
     seed.seed_categories(connection)
+    seed.seed_profile_fields(connection)
     seed.seed_metric_defs(connection)
     yield connection
     connection.close()
@@ -20,9 +21,31 @@ def conn(tmp_path):
 
 @pytest.fixture
 def seeded(conn):
+    """최근 12개월만 채운 빠른 픽스처(대부분의 테스트에 충분하다)."""
     seed.seed_sample_partners(conn)
+    seed.seed_profile_samples(conn)
     run_collection(conn, models.recent_periods(models.current_period(), 12))
     return conn
+
+
+@pytest.fixture
+def full_history(tmp_path):
+    """2023-01 이후 전 구간을 채운 픽스처(이력·폐업 이력 확인용)."""
+    connection = models.connect(tmp_path / "history.db")
+    seed.seed_all(connection)
+    yield connection
+    connection.close()
+
+
+def table_rows(response) -> str:
+    """리스트 표의 본문만 잘라낸다.
+
+    뉴스 티커는 필터와 무관한 전역 피드라 페이지 전체를 보면 필터링된 협력사
+    이름도 나온다. 필터 검증은 표 본문으로 좁혀서 한다.
+    """
+    html = response.data.decode()
+    start = html.find("<tbody>")
+    return html[start:html.find("</tbody>", start)] if start >= 0 else ""
 
 
 @pytest.fixture
@@ -229,11 +252,11 @@ def test_category_filter_and_badges(client):
     assert "금형".encode() in listing.data
 
     molds = client.get("/partners/?category=mold")
-    assert "우진몰드".encode() in molds.data
-    assert "동성테크".encode() not in molds.data
+    assert "우진몰드" in table_rows(molds)
+    assert "동성테크" not in table_rows(molds)
 
     unassigned = client.get("/partners/?category=none")
-    assert "우진몰드".encode() not in unassigned.data
+    assert "우진몰드" not in table_rows(unassigned)
 
 
 def test_settings_manages_categories_and_partners(client):
@@ -252,9 +275,9 @@ def test_settings_manages_categories_and_partners(client):
     ).status_code == 302
 
     page = client.get("/partners/?category=gauge")
-    assert "정우게이지".encode() in page.data
+    assert "정우게이지" in table_rows(page)
     # 하이픈은 제거되어 저장된다.
-    assert "1234567890".encode() in page.data
+    assert "1234567890" in table_rows(page)
 
 
 def test_detail_edit_changes_category(client):
@@ -400,10 +423,11 @@ def test_risk_csv_picks_up_legal_events(conn, tmp_path, monkeypatch):
 def test_weak_coverage_filter_lists_small_partners(client):
     client.post("/partners/seed", data={"months": "6"})
     weak = client.get("/partners/?coverage=weak")
-    assert "성진지그".encode() in weak.data
-    assert "명진검사구".encode() in weak.data
+    rows = table_rows(weak)
+    assert "성진지그" in rows
+    assert "명진검사구" in rows
     # 공시가 있는 협력사는 빠진다.
-    assert "동성테크".encode() not in weak.data
+    assert "동성테크" not in rows
 
 
 def test_detail_can_register_submission_and_manual_value(client):
@@ -438,6 +462,158 @@ def test_detail_can_register_submission_and_manual_value(client):
     assert "manual" in updated["sources"]
 
 
+def test_small_company_headcount_series_actually_moves(seeded):
+    """소규모 인원 시계열이 반올림에 갇혀 멈추지 않아야 한다."""
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "명진검사구")
+    history = [
+        row["value"] for row in models.value_history(seeded, partner["id"], "headcount", limit=60)
+        if row["value"] is not None
+    ]
+    assert len(history) >= 12
+    assert min(history) < max(history)  # 값이 실제로 변한다
+
+
+def test_no_future_dated_events(seeded):
+    rows = seeded.execute(
+        "SELECT COUNT(*) AS n FROM risk_events WHERE occurred_on > date('now')"
+    ).fetchone()
+    assert rows["n"] == 0
+
+
+def test_yearly_chart_falls_back_to_headcount(seeded):
+    from partners.views import yearly_chart
+
+    period = models.known_periods(seeded, limit=1)[-1]
+    small = next(p for p in models.list_partners(seeded) if p["name"] == "성진지그")
+    chart = yearly_chart(seeded, small["id"], period)
+    assert chart["code"] == "headcount"  # 공시 매출이 없으니 인원으로 대체
+    assert len(chart["bars"]) == 3
+
+    listed = next(p for p in models.list_partners(seeded) if p["name"] == "동성테크")
+    revenue_chart = yearly_chart(seeded, listed["id"], period)
+    assert revenue_chart["code"] == "revenue"
+    assert revenue_chart["bars"][-1]["value"] is not None
+
+
+def test_profile_history_is_kept(seeded):
+    """대표자 변경·본점 이전이 덮어쓰이지 않고 이력으로 남아야 한다."""
+    partner = next(p for p in models.list_partners(seeded) if p["name"] == "대한정밀공업")
+    history = models.profile_history(seeded, partner["id"], "ceo_name")
+    values = [row["value"] for row in history]
+
+    # 시드로 넣은 과거 대표자가 이력에 남아 있다(수집이 최신값을 덮어써도).
+    assert "김성곤" in values
+    assert len(values) >= 2
+    # 이력은 확인일 역순이고, 스냅샷은 그 첫 줄과 같다.
+    assert [row["valid_from"] for row in history] == sorted(
+        (row["valid_from"] for row in history), reverse=True
+    )
+    assert models.profile_snapshot(seeded, partner["id"])["ceo_name"]["value"] == values[0]
+
+    # 주소 이전 이력도 남는다.
+    address_history = models.profile_history(seeded, partner["id"] + 2, "address")
+    assert len(address_history) >= 1
+
+
+def test_status_timeline_shows_closure(full_history):
+    """폐업 이력이 구간으로 보여야 한다."""
+    partner = next(p for p in models.list_partners(full_history) if p["name"] == "태광하이텍")
+    timeline = models.status_timeline(full_history, partner["id"])
+    labels = [entry["label"] for entry in timeline]
+    assert labels[0] == "계속사업자"
+    assert "폐업" in labels
+    assert timeline[0]["since"] == models.HISTORY_START
+
+
+def test_history_starts_at_2023(full_history):
+    earliest = full_history.execute("SELECT MIN(period) AS p FROM metric_values").fetchone()["p"]
+    assert earliest == models.HISTORY_START
+
+
+def test_change_log_feeds_ticker_and_api(client):
+    client.post("/partners/seed", data={})
+    payload = client.get("/partners/api/changes.json").get_json()
+    assert payload["latest_id"] > 0
+    assert payload["changes"]
+    first = payload["changes"][0]
+    assert first["partner"]
+    assert first["url"].startswith("/partners/")
+
+    # 티커 항목은 해당 협력사 상세로 연결된다.
+    listing = client.get("/partners/")
+    assert 'class="ticker"' in listing.data.decode()
+    assert f'href="{first["url"]}"' in listing.data.decode()
+
+
+def test_changes_are_highlighted_once(client):
+    client.post("/partners/seed", data={})
+    first = client.get("/partners/")
+    assert 'class="row-new"' in table_rows(first)
+    # 첫 응답이 '본 시점'을 쿠키에 남기므로 다음 조회에는 강조가 사라진다.
+    second = client.get("/partners/")
+    assert 'class="row-new"' not in table_rows(second)
+
+
+def test_collection_logs_only_real_changes(conn):
+    partner_id = models.upsert_partner(conn, name="변화사", biz_no="5556667778", profile="healthy")
+    periods = models.recent_periods(models.current_period(), 6)
+    run_collection(conn, periods, ["nts"])
+    baseline = models.max_change_id(conn)
+
+    # 같은 값을 다시 수집하면 변경이 생기지 않는다.
+    run_collection(conn, periods, ["nts"])
+    assert models.max_change_id(conn) == baseline
+
+    # 상태가 실제로 바뀌면 티커에 올라간다.
+    models.put_metric_value(conn, partner_id, "biz_status", periods[-1], 0.0, "계속사업자", "nts")
+    conn.commit()
+    conn.execute(
+        "UPDATE partners SET profile = 'closed' WHERE id = ?", (partner_id,)
+    )
+    conn.commit()
+    run_collection(conn, periods, ["nts"])
+    assert models.max_change_id(conn) > baseline
+    latest = models.list_changes(conn, limit=1)[0]
+    assert latest["partner_name"] == "변화사"
+
+
+def test_map_places_partners_by_address(seeded):
+    from partners.views import build_map, build_rows
+
+    period = models.known_periods(seeded, limit=1)[-1]
+    data = build_map(build_rows(seeded, period))
+    assert data["markers"]
+    assert not data["missing"]  # 목업 주소는 모두 좌표로 변환된다
+    # 같은 지역이 겹쳐도 좌표가 분리된다.
+    positions = {(m["x"], m["y"]) for m in data["markers"]}
+    assert len(positions) == len(data["markers"])
+    # 모양은 업종, 색은 신호등을 따른다.
+    assert {m["shape"] for m in data["markers"]} - set(
+        ["circle", "square", "triangle", "diamond", "hexagon", "pentagon"]
+    ) == set()
+
+
+def test_geo_locate_and_projection():
+    assert geo.locate("경기도 안산시 단원구 번영2로 100") == geo.CITIES[("경기", "안산")]
+    assert geo.locate("서울특별시 금천구 가산디지털1로") == geo.PROVINCES["서울"]
+    assert geo.locate("") is None
+    assert geo.locate("없는주소") is None
+    x, y = geo.project(37.5, 127.0, 350, 460)
+    assert 0 < x < 350 and 0 < y < 460
+
+
+def test_same_city_name_in_different_provinces():
+    """'광주광역시 광산구'와 '경기도 광주시'를 섞지 않아야 한다."""
+    gwangju_metro = geo.locate("광주광역시 광산구 하남산단로 168")
+    gyeonggi_gwangju = geo.locate("경기도 광주시 초월읍 산이리 12")
+    assert gwangju_metro == geo.CITIES[("광주", "광산")]
+    assert gyeonggi_gwangju == geo.CITIES[("경기", "광주")]
+    assert gwangju_metro != gyeonggi_gwangju
+    # 광역시는 도(경기)보다 훨씬 남서쪽에 있다.
+    assert gwangju_metro[0] < gyeonggi_gwangju[0]
+    assert gwangju_metro[1] < gyeonggi_gwangju[1]
+
+
 # --- 화면 -------------------------------------------------------------------
 
 
@@ -461,11 +637,11 @@ def test_filters_narrow_the_list(client):
     client.post("/partners/seed", data={"months": "6"})
     filtered = client.get("/partners/?signal=red")
     assert filtered.status_code == 200
-    assert "동성테크".encode() not in filtered.data
+    assert "동성테크" not in table_rows(filtered)
 
     searched = client.get("/partners/?q=동성")
-    assert "동성테크".encode() in searched.data
-    assert "대한정밀공업".encode() not in searched.data
+    assert "동성테크" in table_rows(searched)
+    assert "대한정밀공업" not in table_rows(searched)
 
 
 def test_settings_can_add_metric(client):

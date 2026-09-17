@@ -1,14 +1,17 @@
 """협력사 모니터링 대시보드 화면(Blueprint)."""
 
+import math
 import os
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from flask import (
-    Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, url_for,
+    Blueprint, current_app, flash, g, jsonify, make_response, redirect,
+    render_template, request, url_for,
 )
 
-from . import models
+from . import geo, models
 from .collectors import collector_status, run_collection
 from .scoring import PartnerScore, score_partner
 
@@ -21,6 +24,16 @@ METRIC_SPARK_WIDTH, METRIC_SPARK_HEIGHT = 60, 18
 DEFAULT_DB_PATH = "instance/partners.db"
 
 SIGNAL_LABELS = {"green": "정상", "amber": "주의", "red": "경고", "none": "자료없음"}
+
+# 마지막으로 본 변경 번호를 담는 쿠키. 새 변경만 한 번 강조하는 데 쓴다.
+SEEN_COOKIE = "pm_seen_change"
+SEEN_COOKIE_MAX_AGE = 60 * 60 * 24 * 90
+
+# 지도 마커 모양(업종 식별). 색은 신호등이 쓰므로 모양이 업종을 구분한다.
+MARKER_SHAPES = ("circle", "square", "triangle", "diamond", "hexagon", "pentagon")
+MAP_WIDTH, MAP_HEIGHT = 350, 460
+TICKER_LIMIT = 24
+CHART_YEARS = 3
 # 리스트의 카테고리 컬럼 순서. 지표를 추가하면 해당 카테고리 컬럼에 자동으로 붙는다.
 CATEGORY_ORDER = ("기업상태", "재무", "매출", "인원", "경영환경")
 
@@ -72,12 +85,17 @@ def sparkline(values: list[float], width: int = 72, height: int = 22) -> str:
 def build_rows(conn, period: str) -> list[dict]:
     defs = models.list_metric_defs(conn)
     trend_periods = models.recent_periods(period, TREND_MONTHS)
+    shape_by_category = {
+        row["code"]: MARKER_SHAPES[index % len(MARKER_SHAPES)]
+        for index, row in enumerate(models.list_categories(conn, active_only=False))
+    }
     rows = []
     for partner in models.list_partners(conn):
         events = models.list_risk_events(conn, partner["id"])
         values = models.values_as_of(conn, partner["id"], period)
         result = score_partner(defs, values, events)
         trend = _trend_scores(conn, partner["id"], defs, events, trend_periods)
+        profile = models.profile_snapshot(conn, partner["id"])
         rows.append(
             {
                 "partner": partner,
@@ -86,9 +104,67 @@ def build_rows(conn, period: str) -> list[dict]:
                 "trend_points": sparkline(trend, TREND_WIDTH, TREND_HEIGHT),
                 "trend_delta": round(trend[-1] - trend[0], 1) if len(trend) >= 2 else None,
                 "events": events,
+                "profile": profile,
+                "address": profile["address"]["value"] if "address" in profile else None,
+                "shape": shape_by_category.get(partner["category_code"], "circle"),
             }
         )
     return rows
+
+
+def _coordinates(row: dict) -> tuple[float, float] | None:
+    """위·경도를 직접 넣었으면 그것을, 없으면 주소에서 찾는다."""
+    profile = row["profile"]
+    try:
+        if "latitude" in profile and "longitude" in profile:
+            return float(profile["latitude"]["value"]), float(profile["longitude"]["value"])
+    except (TypeError, ValueError):
+        pass
+    return geo.locate(row["address"])
+
+
+DETAIL_MAP_WIDTH, DETAIL_MAP_HEIGHT = 250, 330
+
+
+def build_map(rows: list[dict], width: int = MAP_WIDTH, height: int = MAP_HEIGHT) -> dict:
+    """지도 마커. 색=신호등, 모양=업종. 좌표가 겹치면 조금씩 흩어 놓는다."""
+    markers = []
+    used: dict[tuple[float, float], int] = {}
+    missing = []
+    for row in rows:
+        point = _coordinates(row)
+        if point is None:
+            missing.append(row)
+            continue
+        x, y = geo.project(point[0], point[1], width, height)
+        key = (x, y)
+        seen = used.get(key, 0)
+        used[key] = seen + 1
+        if seen:  # 같은 지역이면 나선형으로 밀어내 겹치지 않게 한다
+            angle = seen * 2.2
+            radius = 13 + 4.5 * seen
+            x += round(radius * math.cos(angle), 1)
+            y += round(radius * math.sin(angle), 1)
+        markers.append(
+            {
+                "id": row["partner"]["id"],
+                "name": row["partner"]["name"],
+                "x": x,
+                "y": y,
+                "shape": row["shape"],
+                "signal": row["score"].signal,
+                "grade": row["score"].grade,
+                "category": row["partner"]["category_code"],
+                "address": row["address"] or "주소 미확인",
+            }
+        )
+    return {
+        "width": width,
+        "height": height,
+        "outlines": geo.outline_paths(width, height),
+        "markers": markers,
+        "missing": [row["partner"]["name"] for row in missing],
+    }
 
 
 def _is_weak(row: dict) -> bool:
@@ -142,9 +218,10 @@ def _sort_key(row: dict, order: str):
 @bp.route("/")
 def index():
     conn = get_conn()
-    periods = models.known_periods(conn, limit=24)
+    periods = models.known_periods(conn, limit=60)
     period = request.args.get("period") or (periods[-1] if periods else models.current_period())
-    rows = build_rows(conn, period)
+    all_rows = build_rows(conn, period)
+    rows = list(all_rows)
 
     query = (request.args.get("q") or "").strip()
     category = request.args.get("category") or ""
@@ -177,7 +254,6 @@ def index():
 
     rows.sort(key=lambda row: _sort_key(row, order))
 
-    all_rows = build_rows(conn, period)
     summary = {
         "total": len(all_rows),
         "red": sum(1 for row in all_rows if row["score"].signal == "red"),
@@ -191,10 +267,21 @@ def index():
     categories_meta = models.list_categories(conn)
     category_summary = _category_summary(all_rows, categories_meta)
 
-    return render_template(
+    seen_id = _seen_change_id()
+    changed = models.changed_partner_ids(conn, seen_id)
+    latest_change_id = models.max_change_id(conn)
+
+    response = make_response(render_template(
         "partners/list.html",
         rows=rows,
         summary=summary,
+        ticker=models.list_changes(conn, limit=TICKER_LIMIT),
+        seen_change_id=seen_id,
+        changed=changed,
+        new_change_count=sum(row["n"] for row in changed.values()),
+        map_data=build_map(rows),  # 지도도 현재 필터를 따른다
+        marker_shapes=_shape_legend(conn),
+        cat_class=_category_classes(conn),
         managers=managers,
         periods=periods,
         period=period,
@@ -209,6 +296,60 @@ def index():
         category_summary=category_summary,
         collectors=collector_status(),
         runs=models.list_runs(conn, limit=5),
+    ))
+    # 새 변경을 '한 번' 강조한 뒤 본 것으로 표시한다.
+    response.set_cookie(
+        SEEN_COOKIE, str(latest_change_id), max_age=SEEN_COOKIE_MAX_AGE, samesite="Lax"
+    )
+    return response
+
+
+def _seen_change_id() -> int:
+    try:
+        return int(request.cookies.get(SEEN_COOKIE, "0"))
+    except ValueError:
+        return 0
+
+
+def _shape_legend(conn) -> list[dict]:
+    return [
+        {
+            "code": row["code"],
+            "label": row["label"],
+            "shape": MARKER_SHAPES[index % len(MARKER_SHAPES)],
+            "cls": f"c-{index % 6 + 1}",
+        }
+        for index, row in enumerate(models.list_categories(conn, active_only=False))
+    ]
+
+
+def _category_classes(conn) -> dict[str, str]:
+    """업종 배지 색 슬롯. 검증된 카테고리 팔레트 순서를 그대로 쓴다."""
+    return {row["code"]: row["cls"] for row in _shape_legend(conn)}
+
+
+@bp.route("/map")
+def map_view():
+    """지도 전용 화면. 업종(모양) × 신호등(색)으로 배치를 본다."""
+    conn = get_conn()
+    periods = models.known_periods(conn, limit=60)
+    period = request.args.get("period") or (periods[-1] if periods else models.current_period())
+    rows = build_rows(conn, period)
+    category = request.args.get("category") or ""
+    if category:
+        rows = [row for row in rows if (row["partner"]["category_code"] or "") == category]
+    return render_template(
+        "partners/map.html",
+        map_data=build_map(rows),
+        marker_shapes=_shape_legend(conn),
+        category_options=models.list_categories(conn),
+        category_labels=models.category_labels(conn),
+        cat_class=_category_classes(conn),
+        filters={"category": category},
+        period=period,
+        periods=periods,
+        rows=sorted(rows, key=lambda row: _sort_key(row, "risk")),
+        signal_labels=SIGNAL_LABELS,
     )
 
 
@@ -240,6 +381,24 @@ def detail(partner_id: int):
                 # 제출 경과 지표를 바로 다시 계산한다.
                 run_collection(conn, models.recent_periods(models.current_period(), 12), ["submission"])
                 flash(f"{doc_type} 제출 기록을 등록했습니다.")
+
+        elif action == "update_overview":
+            today = date.today().isoformat()
+            for field in models.list_profile_fields(conn):
+                if f"profile__{field['code']}" not in request.form:
+                    continue
+                value = (request.form.get(f"profile__{field['code']}") or "").strip() or None
+                previous = models.put_profile_value(
+                    conn, partner_id, field["code"], value,
+                    valid_from=(request.form.get("valid_from") or today), source="manual",
+                )
+                if previous:
+                    models.add_change(
+                        conn, partner_id, "개요", f"{field['label']} 변경",
+                        f"{previous} → {value}", severity="warn", anchor="overview",
+                    )
+            conn.commit()
+            flash("기업개요를 저장했습니다. 변경된 항목은 이력으로 남습니다.")
 
         elif action == "manual_value":
             code = (request.form.get("metric_code") or "").strip()
@@ -311,11 +470,86 @@ def detail(partner_id: int):
         signal_labels=SIGNAL_LABELS,
         category_options=models.list_categories(conn),
         category_labels=models.category_labels(conn),
+        cat_class=_category_classes(conn),
         submissions=models.list_submissions(conn, partner_id),
         doc_types=models.REQUIRED_DOC_TYPES + models.OPTIONAL_DOC_TYPES,
         metric_defs=defs,
         recent_period_options=models.recent_periods(period, 12)[::-1],
+        profile=models.profile_snapshot(conn, partner_id),
+        profile_fields=models.list_profile_fields(conn),
+        profile_changes=models.profile_history(conn, partner_id),
+        yearly=yearly_chart(conn, partner_id, period),
+        status_history=[
+            {"code": code, "label": label, "timeline": models.status_timeline(conn, partner_id, code)}
+            for code, label in (("biz_status", "국세청 사업자상태"), ("pension_status", "국민연금 사업장"))
+        ],
+        map_point=build_map(
+            [_detail_row(conn, partner, period, defs)], DETAIL_MAP_WIDTH, DETAIL_MAP_HEIGHT
+        ),
+        marker_shapes=_shape_legend(conn),
+        changes=models.list_changes(conn, limit=200),
+        history_start=models.HISTORY_START,
     )
+
+
+def _detail_row(conn, partner, period: str, defs) -> dict:
+    """지도 마커 하나를 그리기 위한 최소 행."""
+    events = models.list_risk_events(conn, partner["id"])
+    values = models.values_as_of(conn, partner["id"], period)
+    profile = models.profile_snapshot(conn, partner["id"])
+    return {
+        "partner": partner,
+        "score": score_partner(defs, values, events),
+        "profile": profile,
+        "address": profile["address"]["value"] if "address" in profile else None,
+        "shape": "circle",
+    }
+
+
+def yearly_chart(conn, partner_id: int, period: str, years: int = CHART_YEARS) -> dict:
+    """최근 N년 매출 막대그래프 데이터.
+
+    공시 재무가 없는 소규모 협력사는 매출 자료가 없으므로 인원(연금 가입자수)으로
+    대체한다. 무엇을 그린 것인지 화면에 함께 표시한다.
+    """
+    end_year = int(period[:4])
+    wanted = [str(year) for year in range(end_year - years + 1, end_year + 1)]
+
+    for code, label, unit, note in (
+        ("revenue", "매출액", "억원", "DART 공시 또는 직접 입력"),
+        ("headcount", "가입자수", "명", "매출 자료가 없어 인원으로 대체"),
+    ):
+        rows = conn.execute(
+            "SELECT period, value FROM metric_values WHERE partner_id = ? AND metric_code = ? "
+            "AND value IS NOT NULL ORDER BY period",
+            (partner_id, code),
+        ).fetchall()
+        if not rows:
+            continue
+        # 연도별 마지막 관측치를 그 해의 값으로 본다(연간 공시는 12월에 들어온다).
+        by_year: dict[str, float] = {}
+        for row in rows:
+            if row["period"] <= period:
+                by_year[row["period"][:4]] = row["value"]
+        bars = [{"year": year, "value": by_year.get(year)} for year in wanted]
+        if not any(bar["value"] is not None for bar in bars):
+            continue
+        top = max(bar["value"] for bar in bars if bar["value"] is not None) or 1
+        for bar in bars:
+            bar["ratio"] = (bar["value"] / top) if bar["value"] is not None else 0.0
+        first, last = bars[0]["value"], bars[-1]["value"]
+        return {
+            "code": code,
+            "label": label,
+            "unit": unit,
+            "note": note,
+            "bars": bars,
+            "change": (
+                round((last - first) / abs(first) * 100, 1)
+                if first and last is not None else None
+            ),
+        }
+    return {"code": None, "label": "매출액", "unit": "억원", "note": "자료 없음", "bars": [], "change": None}
 
 
 def _normalize(values: list[float]) -> list[float]:
@@ -373,6 +607,31 @@ def settings():
                     bool(request.form.get(f"cat_active__{code}")),
                 )
             flash("업종 분류를 저장했습니다.")
+        elif action == "add_profile_field":
+            code = (request.form.get("code") or "").strip()
+            label = (request.form.get("label") or "").strip()
+            if not code or not label:
+                flash("개요 항목의 코드와 표시명을 입력해 주세요.")
+                return redirect(url_for("partners.settings"))
+            models.upsert_profile_field(
+                conn, code=code, label=label,
+                kind=request.form.get("kind") or "text",
+                source=(request.form.get("source") or "manual").strip(),
+                active=1,
+                sort_order=int(_as_float(request.form.get("sort_order")) or 100),
+            )
+            flash(f"기업개요 항목 '{label}'을 추가했습니다.")
+        elif action == "update_profile_fields":
+            for field in models.list_profile_fields(conn, active_only=False):
+                code = field["code"]
+                models.upsert_profile_field(
+                    conn, code=code,
+                    label=(request.form.get(f"plabel__{code}") or field["label"]).strip(),
+                    kind=field["kind"], source=field["source"],
+                    active=1 if request.form.get(f"pactive__{code}") else 0,
+                    sort_order=int(_as_float(request.form.get(f"porder__{code}")) or field["sort_order"]),
+                )
+            flash("기업개요 항목을 저장했습니다.")
         elif action == "add_partner":
             name = (request.form.get("name") or "").strip()
             biz_no = (request.form.get("biz_no") or "").strip().replace("-", "")
@@ -422,15 +681,21 @@ def settings():
         categories=CATEGORY_ORDER,
         partner_categories=models.list_categories(conn, active_only=False),
         category_counts=models.count_partners_by_category(conn),
+        profile_fields=models.list_profile_fields(conn, active_only=False),
+        history_start=models.HISTORY_START,
     )
 
 
 @bp.route("/collect", methods=["POST"])
 def collect():
     conn = get_conn()
-    months = int(request.form.get("months") or 12)
+    months = request.form.get("months")
     sources = request.form.getlist("sources") or None
-    periods = models.recent_periods(models.current_period(), months)
+    # 기본은 이력 관리 시작(2023-01)부터 현재까지 전 구간을 다시 맞춘다.
+    periods = (
+        models.recent_periods(models.current_period(), int(months))
+        if months else models.history_periods()
+    )
     summaries = run_collection(conn, periods, sources)
     for summary in summaries:
         mode = "실 API" if summary["mode"] == "live" else "목업"
@@ -444,8 +709,9 @@ def seed():
     from .seed import seed_all
 
     conn = get_conn()
-    seed_all(conn, months=int(request.form.get("months") or 12))
-    flash("샘플 협력사와 최근 12개월 데이터를 채웠습니다.")
+    months = request.form.get("months")
+    seed_all(conn, months=int(months) if months else None)
+    flash(f"샘플 협력사와 {models.HISTORY_START} 이후 이력을 채웠습니다.")
     return redirect(url_for("partners.index"))
 
 
@@ -476,10 +742,38 @@ def api_partners():
                     metric.code: {"value": metric.value, "text": metric.text, "signal": metric.signal}
                     for metric in result.metrics
                 },
+                "address": row["address"],
                 "last_collected_at": result.last_collected_at,
             }
         )
     return jsonify({"period": period, "partners": payload})
+
+
+@bp.route("/api/changes.json")
+def api_changes():
+    """뉴스 티커용 최근 변경. 다른 시스템·알림봇에서도 그대로 쓸 수 있다."""
+    conn = get_conn()
+    since = request.args.get("since", type=int) or 0
+    changes = models.list_changes(conn, limit=request.args.get("limit", type=int) or 40, since_id=since)
+    return jsonify(
+        {
+            "latest_id": models.max_change_id(conn),
+            "changes": [
+                {
+                    "id": row["id"],
+                    "partner_id": row["partner_id"],
+                    "partner": row["partner_name"],
+                    "kind": row["kind"],
+                    "title": row["title"],
+                    "detail": row["detail"],
+                    "severity": row["severity"],
+                    "created_at": row["created_at"],
+                    "url": url_for("partners.detail", partner_id=row["partner_id"], _anchor=row["anchor"] or None),
+                }
+                for row in changes
+            ],
+        }
+    )
 
 
 def _as_float(raw) -> float | None:

@@ -8,6 +8,8 @@
   - 당월고지금액(crrmmNtcAmt) / 가입자수 → 1인당 신고소득 추정 → 임금 삭감·무급휴직 징후
   - 신규취득자수 / 상실가입자수          → 이탈률(퇴사 러시)
   - 사업장 가입상태(wkplJnngpStcd)       → '탈퇴'는 폐업·근로자 0명 직전 신호
+  - 사업장 도로명주소(wkplRoadNmDtlAddr) → **소규모 협력사의 주소도 여기서 나온다**
+                                          (DART 기업개요는 외감 법인만 있다)
 
 실 API: 공공데이터포털 국민연금공단 사업장 가입 내역(NpsBplcInfoInqireServiceV2)
 필요 키: DATA_GO_KR_KEY
@@ -16,7 +18,10 @@
 import os
 import random
 
-from .base import Collector, CollectResult, CollectorError, Event, Reading, get_json, to_float
+from .base import (
+    Collector, CollectResult, CollectorError, Event, ProfileFact, Reading,
+    clamp_date, get_json, to_float,
+)
 
 BASE_ENDPOINT = "https://apis.data.go.kr/B552015/NpsBplcInfoInqireServiceV2/getBassInfoSearchV2"
 DETAIL_ENDPOINT = "https://apis.data.go.kr/B552015/NpsBplcInfoInqireServiceV2/getDetailInfoSearchV2"
@@ -68,6 +73,11 @@ class InsuranceCollector(Collector):
             if average is not None:
                 readings.append(Reading(latest, "avg_pay", average, text=f"{average:,.0f}만원"))
 
+        profiles: list[ProfileFact] = []
+        address = (record.get("wkplRoadNmDtlAddr") or record.get("wkplDtlAddr") or "").strip()
+        if address:
+            profiles.append(ProfileFact("address", address))
+
         status_code = str(record.get("wkplJnngStcd") or record.get("wkplJnngpStcd") or "").strip()
         value, label = STATUS_MAP.get(status_code, (None, None))
         if value is not None:
@@ -97,10 +107,11 @@ class InsuranceCollector(Collector):
                     readings.append(Reading(latest, "turnover_3m", round(lost / headcount * 100, 1)))
 
         # 증감률은 저장된 시계열과 비교해야 하므로 수집 후 보완한다.
-        return CollectResult(readings=readings, events=events)
+        return CollectResult(readings=readings, events=events, profiles=profiles)
 
     def collect_mock(self, partner, periods: list[str], conn=None) -> CollectResult:
         rng = random.Random(f"insurance:{partner['biz_no']}")
+        address = _mock_address(rng)
         profile = partner["profile"] or "healthy"
         small = profile.startswith("small")
         headcount = rng.randint(6, 28) if small else rng.randint(40, 240)
@@ -119,11 +130,14 @@ class InsuranceCollector(Collector):
             "watch": rng.uniform(-0.6, 0.1),
         }.get(profile, rng.uniform(-2.6, -1.2))
 
+        # 누적은 float로 한다. 정수로 반올림하며 누적하면 소규모(10명대)에서
+        # 변화가 반올림에 먹혀 시계열이 그대로 멈춘다.
+        level = float(headcount)
         series: list[tuple[str, int, float]] = []
         for period in periods:
-            headcount = max(1, round(headcount * (1 + monthly_drift / 100)))
+            level = max(1.0, level * (1 + monthly_drift / 100))
             pay = max(210.0, pay * (1 + pay_drift / 100))
-            series.append((period, headcount, pay))
+            series.append((period, max(1, round(level)), pay))
 
         readings: list[Reading] = []
         events: list[Event] = []
@@ -160,10 +174,36 @@ class InsuranceCollector(Collector):
                 events.append(
                     Event(
                         kind="연금 사업장", title="국민연금 사업장 탈퇴 확인",
-                        occurred_on=f"{period}-10", severity="critical",
+                        occurred_on=clamp_date(f"{period}-10"), severity="critical",
                     )
                 )
-        return CollectResult(readings=readings, events=events)
+        return CollectResult(
+            readings=readings, events=events, profiles=[ProfileFact("address", address)]
+        )
+
+
+# 목업 주소 후보. 실제 제조 협력사가 몰려 있는 산업단지 위치로 흩어 놓는다.
+_MOCK_ADDRESSES = (
+    "경기도 안산시 단원구 번영2로 {n}",
+    "경기도 화성시 향남읍 발안공단로 {n}",
+    "경기도 평택시 청북읍 청북산단로 {n}",
+    "인천광역시 남동구 남동서로 {n}",
+    "충청남도 천안시 서북구 직산로 {n}",
+    "충청남도 아산시 둔포면 아산밸리로 {n}",
+    "경상북도 구미시 1공단로 {n}",
+    "경상북도 경주시 외동읍 외동산업로 {n}",
+    "경상남도 김해시 주촌면 골든루트로 {n}",
+    "경상남도 창원시 성산구 웅남로 {n}",
+    "울산광역시 북구 매곡산업로 {n}",
+    "광주광역시 광산구 하남산단로 {n}",
+    "전라북도 익산시 석암로 {n}",
+    "대구광역시 달성군 논공중앙로 {n}",
+    "강원특별자치도 원주시 우산공단길 {n}",
+)
+
+
+def _mock_address(rng) -> str:
+    return rng.choice(_MOCK_ADDRESSES).format(n=rng.randint(10, 320))
 
 
 def _items(payload: dict) -> list[dict]:

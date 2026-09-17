@@ -9,7 +9,7 @@
 import os
 import random
 
-from .base import Collector, CollectResult, CollectorError, Event, Reading, post_json
+from .base import Collector, CollectResult, CollectorError, Event, Reading, clamp_date, post_json
 
 NTS_ENDPOINT = "https://api.odcloud.kr/api/nts-businessman/v1/status"
 
@@ -71,7 +71,10 @@ class NtsCollector(Collector):
             readings.append(Reading(period, "biz_status", value, text=label))
             if value >= 1.0 and index == flip_at:
                 events.append(
-                    Event(kind="사업자상태", title=f"{label} 확인", occurred_on=f"{period}-15", severity="critical")
+                    Event(
+                        kind="사업자상태", title=f"{label} 확인",
+                        occurred_on=clamp_date(f"{period}-15"), severity="critical",
+                    )
                 )
         return CollectResult(readings=readings, events=events)
 

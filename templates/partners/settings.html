@@ -47,6 +47,49 @@
 </div>
 
 <div class="card">
+  <h2>기업개요 항목</h2>
+  <p class="small muted">
+    상세 화면에 보이는 개요 항목입니다. 추가하면 상세의 '기업개요' 카드에 바로 나타나고,
+    값을 고치면 이력으로 쌓입니다(대표자 변경·본점 이전 추적).
+  </p>
+  <form method="post">
+    <input type="hidden" name="action" value="update_profile_fields">
+    <div class="table-wrap">
+    <table style="max-width:680px">
+      <thead><tr><th>사용</th><th>코드</th><th>표시명</th><th>형식</th><th>정렬</th><th>자료원</th></tr></thead>
+      <tbody>
+        {% for field in profile_fields %}
+        <tr>
+          <td><input type="checkbox" name="pactive__{{ field.code }}" {% if field.active %}checked{% endif %}></td>
+          <td class="tiny muted">{{ field.code }}</td>
+          <td><input type="text" name="plabel__{{ field.code }}" value="{{ field.label }}" style="width:150px"></td>
+          <td class="tiny muted">{{ field.kind }}</td>
+          <td><input type="number" name="porder__{{ field.code }}" value="{{ field.sort_order }}" style="width:70px"></td>
+          <td class="tiny muted">{{ field.source or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <button type="submit" style="margin-top:12px">개요 항목 저장</button>
+  </form>
+
+  <form method="post" class="filters" style="margin-top:14px">
+    <input type="hidden" name="action" value="add_profile_field">
+    <input type="text" name="code" placeholder="코드 (예: plant_area)" required>
+    <input type="text" name="label" placeholder="표시명 (예: 공장 면적)" required>
+    <select name="kind">
+      <option value="text">문자</option>
+      <option value="date">날짜</option>
+      <option value="number">숫자</option>
+    </select>
+    <input type="text" name="source" placeholder="자료원" value="manual" style="width:100px">
+    <input type="number" name="sort_order" placeholder="정렬" value="70" style="width:80px">
+    <button type="submit">개요 항목 추가</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>협력사 등록</h2>
   <p class="small muted">사업자등록번호가 같으면 기존 협력사 정보를 갱신합니다. 등록 후 수집을 실행하면 지표가 채워집니다.</p>
   <form method="post" class="filters">
@@ -136,6 +179,7 @@
 
 <div class="card">
   <h2>수집기</h2>
+  <p class="tiny muted">현황 이력은 {{ history_start }}부터 관리합니다. 기간을 비우고 실행하면 전 구간을 다시 맞춥니다.</p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>소스</th><th>모드</th><th>필요 키</th><th>채우는 지표</th></tr></thead>
@@ -153,7 +197,7 @@
   </div>
   <form method="post" action="{{ url_for('partners.collect') }}" class="filters" style="margin-top:12px">
     <input type="hidden" name="next" value="{{ url_for('partners.settings') }}">
-    최근 <input type="number" name="months" value="12" min="1" max="36" style="width:64px"> 개월
+    최근 <input type="number" name="months" placeholder="전체" min="1" max="120" style="width:74px"> 개월
     <button type="submit">전체 수집 실행</button>
   </form>
 </div>
