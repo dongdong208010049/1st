@@ -91,6 +91,32 @@ def build_rows(conn, period: str) -> list[dict]:
     return rows
 
 
+def _category_summary(rows: list[dict], categories) -> list[dict]:
+    """업종별 협력사 수와 경고 건수. 리스트 상단 칩과 필터 링크로 쓴다."""
+    summary = []
+    for category in categories:
+        members = [row for row in rows if (row["partner"]["category_code"] or "") == category["code"]]
+        summary.append(
+            {
+                "code": category["code"],
+                "label": category["label"],
+                "total": len(members),
+                "red": sum(1 for row in members if row["score"].signal == "red"),
+            }
+        )
+    unassigned = [row for row in rows if not row["partner"]["category_code"]]
+    if unassigned:
+        summary.append(
+            {
+                "code": "none",
+                "label": "미분류",
+                "total": len(unassigned),
+                "red": sum(1 for row in unassigned if row["score"].signal == "red"),
+            }
+        )
+    return summary
+
+
 def _sort_key(row: dict, order: str):
     result: PartnerScore = row["score"]
     if order == "name":
@@ -111,6 +137,7 @@ def index():
     rows = build_rows(conn, period)
 
     query = (request.args.get("q") or "").strip()
+    category = request.args.get("category") or ""
     signal = request.args.get("signal") or ""
     grade = request.args.get("grade") or ""
     manager = request.args.get("manager") or ""
@@ -124,6 +151,10 @@ def index():
             or needle in (row["partner"]["biz_no"] or "")
             or needle in (row["partner"]["industry"] or "").lower()
         ]
+    if category:
+        # 'none'은 미분류 협력사만 본다.
+        wanted = "" if category == "none" else category
+        rows = [row for row in rows if (row["partner"]["category_code"] or "") == wanted]
     if signal:
         rows = [row for row in rows if row["score"].signal == signal]
     if grade:
@@ -143,6 +174,8 @@ def index():
         "stale": sum(1 for row in all_rows if row["score"].stale),
     }
     managers = sorted({row["partner"]["manager"] for row in all_rows if row["partner"]["manager"]})
+    categories_meta = models.list_categories(conn)
+    category_summary = _category_summary(all_rows, categories_meta)
 
     return render_template(
         "partners/list.html",
@@ -153,19 +186,39 @@ def index():
         period=period,
         categories=CATEGORY_ORDER,
         signal_labels=SIGNAL_LABELS,
-        filters={"q": query, "signal": signal, "grade": grade, "manager": manager, "order": order},
+        filters={
+            "q": query, "category": category, "signal": signal,
+            "grade": grade, "manager": manager, "order": order,
+        },
+        category_labels=models.category_labels(conn),
+        category_options=categories_meta,
+        category_summary=category_summary,
         collectors=collector_status(),
         runs=models.list_runs(conn, limit=5),
     )
 
 
-@bp.route("/<int:partner_id>")
+@bp.route("/<int:partner_id>", methods=["GET", "POST"])
 def detail(partner_id: int):
     conn = get_conn()
     partner = models.get_partner(conn, partner_id)
     if partner is None:
         flash("해당 협력사를 찾을 수 없습니다.")
         return redirect(url_for("partners.index"))
+
+    if request.method == "POST":
+        models.update_partner_fields(
+            conn,
+            partner_id,
+            name=(request.form.get("name") or partner["name"]).strip(),
+            category_code=(request.form.get("category_code") or "").strip() or None,
+            industry=(request.form.get("industry") or "").strip() or None,
+            manager=(request.form.get("manager") or "").strip() or None,
+            tier=(request.form.get("tier") or "").strip() or None,
+            dart_corp_code=(request.form.get("dart_corp_code") or "").strip() or None,
+        )
+        flash("협력사 정보를 저장했습니다.")
+        return redirect(url_for("partners.detail", partner_id=partner_id))
 
     periods = models.known_periods(conn, limit=24)
     period = request.args.get("period") or (periods[-1] if periods else models.current_period())
@@ -206,6 +259,8 @@ def detail(partner_id: int):
         period=period,
         categories=CATEGORY_ORDER,
         signal_labels=SIGNAL_LABELS,
+        category_options=models.list_categories(conn),
+        category_labels=models.category_labels(conn),
     )
 
 
@@ -243,6 +298,45 @@ def settings():
                 sort_order=int(_as_float(request.form.get("sort_order")) or 100),
             )
             flash(f"지표 '{code}'를 추가했습니다.")
+        elif action == "add_category":
+            code = (request.form.get("code") or "").strip()
+            label = (request.form.get("label") or "").strip()
+            if not code or not label:
+                flash("분류 코드와 표시명을 모두 입력해 주세요.")
+                return redirect(url_for("partners.settings"))
+            models.upsert_category(
+                conn, code, label, int(_as_float(request.form.get("sort_order")) or 100)
+            )
+            flash(f"업종 분류 '{label}'을 추가했습니다.")
+        elif action == "update_categories":
+            for category in models.list_categories(conn, active_only=False):
+                code = category["code"]
+                models.upsert_category(
+                    conn,
+                    code,
+                    (request.form.get(f"label__{code}") or category["label"]).strip(),
+                    int(_as_float(request.form.get(f"order__{code}")) or category["sort_order"]),
+                    bool(request.form.get(f"cat_active__{code}")),
+                )
+            flash("업종 분류를 저장했습니다.")
+        elif action == "add_partner":
+            name = (request.form.get("name") or "").strip()
+            biz_no = (request.form.get("biz_no") or "").strip().replace("-", "")
+            if not name or not biz_no:
+                flash("협력사명과 사업자등록번호를 입력해 주세요.")
+                return redirect(url_for("partners.settings"))
+            models.upsert_partner(
+                conn,
+                name=name,
+                biz_no=biz_no,
+                category_code=(request.form.get("category_code") or "").strip() or None,
+                industry=(request.form.get("industry") or "").strip() or None,
+                manager=(request.form.get("manager") or "").strip() or None,
+                tier=(request.form.get("tier") or "").strip() or None,
+                dart_corp_code=(request.form.get("dart_corp_code") or "").strip() or None,
+                profile="healthy",
+            )
+            flash(f"협력사 '{name}'을 등록했습니다. 수집을 실행하면 지표가 채워집니다.")
         elif action == "update":
             for defn in models.list_metric_defs(conn, active_only=False):
                 code = defn["code"]
@@ -272,6 +366,8 @@ def settings():
         collectors=collector_status(),
         runs=models.list_runs(conn, limit=10),
         categories=CATEGORY_ORDER,
+        partner_categories=models.list_categories(conn, active_only=False),
+        category_counts=models.count_partners_by_category(conn),
     )
 
 
@@ -304,13 +400,17 @@ def api_partners():
     conn = get_conn()
     periods = models.known_periods(conn, limit=1)
     period = request.args.get("period") or (periods[-1] if periods else models.current_period())
+    labels = models.category_labels(conn)
     payload = []
     for row in build_rows(conn, period):
         result = row["score"]
+        code = row["partner"]["category_code"]
         payload.append(
             {
                 "name": row["partner"]["name"],
                 "biz_no": row["partner"]["biz_no"],
+                "category_code": code,
+                "category": labels.get(code),
                 "grade": result.grade,
                 "signal": result.signal,
                 "score": round(result.score, 1) if result.score is not None else None,

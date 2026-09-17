@@ -23,16 +23,26 @@ METRIC_DEFS = (
     ("sanction_count", "경영환경", "행정제재", "건", "lower_better", 0, 2, 5, "risk_list", 52),
 )
 
-# (name, biz_no, industry, manager, tier, profile)
+# 업(業) 분류 기본값. 화면(설정)에서 추가·수정할 수 있고, 여기에 행을 더해도 된다.
+# (code, label, sort_order)
+CATEGORIES = (
+    ("mold", "금형", 10),
+    ("production", "양산처", 20),
+    ("jig", "지그", 30),
+    ("inspection", "검사구", 40),
+    ("etc", "기타", 90),
+)
+
+# (name, biz_no, category_code, industry, manager, tier, profile)
 SAMPLE_PARTNERS = (
-    ("대한정밀공업", "1048201234", "금속 가공", "김철수", "1차", "distress"),
-    ("동성테크", "2208102345", "전자부품", "김철수", "1차", "healthy"),
-    ("세방기전", "3138503456", "전기장비", "이영희", "1차", "watch"),
-    ("한울소재", "4028104567", "화학소재", "이영희", "2차", "healthy"),
-    ("우진몰드", "5178205678", "금형", "박민수", "2차", "watch"),
-    ("삼환전자", "6068306789", "반도체부품", "박민수", "1차", "healthy"),
-    ("태광하이텍", "7098407890", "정밀가공", "정지훈", "2차", "closed"),
-    ("나라프레스", "8108508901", "프레스 가공", "정지훈", "2차", "suspended"),
+    ("대한정밀공업", "1048201234", "mold", "금속 가공", "김철수", "1차", "distress"),
+    ("동성테크", "2208102345", "production", "전자부품", "김철수", "1차", "healthy"),
+    ("세방기전", "3138503456", "production", "전기장비", "이영희", "1차", "watch"),
+    ("한울소재", "4028104567", "production", "화학소재", "이영희", "2차", "healthy"),
+    ("우진몰드", "5178205678", "mold", "금형", "박민수", "2차", "watch"),
+    ("삼환전자", "6068306789", "inspection", "반도체부품", "박민수", "1차", "healthy"),
+    ("태광하이텍", "7098407890", "jig", "정밀가공", "정지훈", "2차", "closed"),
+    ("나라프레스", "8108508901", "production", "프레스 가공", "정지훈", "2차", "suspended"),
 )
 
 
@@ -54,24 +64,31 @@ def seed_metric_defs(conn) -> None:
         )
 
 
+def seed_categories(conn) -> None:
+    for code, label, sort_order in CATEGORIES:
+        models.upsert_category(conn, code, label, sort_order)
+
+
 def seed_sample_partners(conn) -> list[int]:
     return [
         models.upsert_partner(
             conn,
             name=name,
             biz_no=biz_no,
+            category_code=category_code,
             industry=industry,
             manager=manager,
             tier=tier,
             profile=profile,
         )
-        for name, biz_no, industry, manager, tier, profile in SAMPLE_PARTNERS
+        for name, biz_no, category_code, industry, manager, tier, profile in SAMPLE_PARTNERS
     ]
 
 
 def seed_all(conn, months: int = 12) -> None:
     """지표 정의 + 샘플 협력사 + 최근 12개월 수집값을 한 번에 채운다."""
     models.init_db(conn)
+    seed_categories(conn)
     seed_metric_defs(conn)
     seed_sample_partners(conn)
     periods = models.recent_periods(models.current_period(), months)

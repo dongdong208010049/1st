@@ -3,6 +3,71 @@
 {% block content %}
 
 <div class="card">
+  <h2>업종 분류</h2>
+  <p class="small muted">
+    협력사를 업(業)으로 구분합니다. 분류를 추가하면 리스트 상단 집계 칩·필터·배지에 바로 반영됩니다.
+    사용을 끄면 새로 선택할 수 없지만, 이미 그 분류로 지정된 협력사는 그대로 유지됩니다.
+  </p>
+  <form method="post">
+    <input type="hidden" name="action" value="update_categories">
+    <div class="table-wrap">
+    <table style="max-width:620px">
+      <thead><tr><th>사용</th><th>코드</th><th>표시명</th><th>정렬</th><th>협력사 수</th></tr></thead>
+      <tbody>
+        {% for item in partner_categories %}
+        <tr>
+          <td><input type="checkbox" name="cat_active__{{ item.code }}" {% if item.active %}checked{% endif %}></td>
+          <td class="small muted">{{ item.code }}</td>
+          <td><input type="text" name="label__{{ item.code }}" value="{{ item.label }}" style="width:140px"></td>
+          <td><input type="number" name="order__{{ item.code }}" value="{{ item.sort_order }}" style="width:70px"></td>
+          <td class="small">{{ category_counts.get(item.code, 0) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="small muted">등록된 분류가 없습니다.</td></tr>
+        {% endfor %}
+        {% if category_counts.get('', 0) %}
+        <tr>
+          <td></td><td class="small muted">-</td><td class="small muted">미분류</td><td></td>
+          <td class="small">{{ category_counts.get('', 0) }}</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+    </div>
+    <button type="submit" style="margin-top:12px">분류 저장</button>
+  </form>
+
+  <form method="post" class="filters" style="margin-top:14px">
+    <input type="hidden" name="action" value="add_category">
+    <input type="text" name="code" placeholder="코드 (예: gauge)" required>
+    <input type="text" name="label" placeholder="표시명 (예: 게이지)" required>
+    <input type="number" name="sort_order" placeholder="정렬" value="50" style="width:80px">
+    <button type="submit">분류 추가</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>협력사 등록</h2>
+  <p class="small muted">사업자등록번호가 같으면 기존 협력사 정보를 갱신합니다. 등록 후 수집을 실행하면 지표가 채워집니다.</p>
+  <form method="post" class="filters">
+    <input type="hidden" name="action" value="add_partner">
+    <input type="text" name="name" placeholder="협력사명" required>
+    <input type="text" name="biz_no" placeholder="사업자등록번호" required style="width:150px">
+    <select name="category_code">
+      <option value="">미분류</option>
+      {% for item in partner_categories if item.active %}
+        <option value="{{ item.code }}">{{ item.label }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="industry" placeholder="세부 업종" style="width:120px">
+    <input type="text" name="tier" placeholder="구분" style="width:90px">
+    <input type="text" name="manager" placeholder="담당자" style="width:100px">
+    <input type="text" name="dart_corp_code" placeholder="DART 고유번호" style="width:130px">
+    <button type="submit">등록</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>지표 정의 (활성 가중치 합계 {{ '%g'|format(total_weight) }})</h2>
   <p class="small muted">
     점수는 <strong>good → 100점, bad → 0점</strong> 선형 보간이고, 종합점수는 값이 있는 지표의 가중 평균입니다.

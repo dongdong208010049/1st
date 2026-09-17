@@ -12,6 +12,7 @@ from partners.scoring import grade_of, score_metric, score_partner, signal_of
 def conn(tmp_path):
     connection = models.connect(tmp_path / "partners.db")
     models.init_db(connection)
+    seed.seed_categories(connection)
     seed.seed_metric_defs(connection)
     yield connection
     connection.close()
@@ -170,6 +171,95 @@ def test_added_metric_appears_without_schema_change(conn):
     defs = models.list_metric_defs(conn)
     result = score_partner(defs, models.values_as_of(conn, partner_id, "2026-09"))
     assert any(metric.code == "esg_score" and metric.score == 100.0 for metric in result.metrics)
+
+
+# --- 업종 카테고리 ----------------------------------------------------------
+
+
+def test_migration_adds_category_column_to_old_db(tmp_path):
+    """category_code 컬럼이 없던 기존 DB도 그대로 열려야 한다."""
+    connection = models.connect(tmp_path / "old.db")
+    connection.executescript(
+        "CREATE TABLE partners (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
+        "biz_no TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)"
+    )
+    connection.commit()
+    models.init_db(connection)
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(partners)")}
+    assert "category_code" in columns
+    connection.close()
+
+
+def test_category_can_be_added_and_deactivated(conn):
+    models.upsert_category(conn, "gauge", "게이지", 50)
+    assert "게이지" in [row["label"] for row in models.list_categories(conn)]
+
+    models.upsert_category(conn, "gauge", "게이지", 50, active=False)
+    assert "게이지" not in [row["label"] for row in models.list_categories(conn)]
+    # 비활성 분류도 이름은 남아서 이미 지정된 협력사 배지를 계속 표시할 수 있다.
+    assert models.category_labels(conn)["gauge"] == "게이지"
+
+
+def test_partner_category_can_be_changed(conn):
+    partner_id = models.upsert_partner(conn, name="신규사", biz_no="1112223334", category_code="mold")
+    assert models.get_partner(conn, partner_id)["category_code"] == "mold"
+    models.update_partner_fields(conn, partner_id, category_code="jig", manager="김철수")
+    updated = models.get_partner(conn, partner_id)
+    assert updated["category_code"] == "jig"
+    assert updated["manager"] == "김철수"
+
+
+def test_partner_counts_by_category(seeded):
+    counts = models.count_partners_by_category(seeded)
+    assert counts["mold"] == 2
+    assert counts["production"] == 4
+
+
+def test_category_filter_and_badges(client):
+    client.post("/partners/seed", data={"months": "3"})
+    listing = client.get("/partners/")
+    assert "금형".encode() in listing.data
+
+    molds = client.get("/partners/?category=mold")
+    assert "우진몰드".encode() in molds.data
+    assert "동성테크".encode() not in molds.data
+
+    unassigned = client.get("/partners/?category=none")
+    assert "우진몰드".encode() not in unassigned.data
+
+
+def test_settings_manages_categories_and_partners(client):
+    client.post("/partners/seed", data={"months": "3"})
+    assert client.post(
+        "/partners/settings",
+        data={"action": "add_category", "code": "gauge", "label": "게이지", "sort_order": "50"},
+    ).status_code == 302
+
+    assert client.post(
+        "/partners/settings",
+        data={
+            "action": "add_partner", "name": "정우게이지", "biz_no": "123-45-67890",
+            "category_code": "gauge", "manager": "김철수",
+        },
+    ).status_code == 302
+
+    page = client.get("/partners/?category=gauge")
+    assert "정우게이지".encode() in page.data
+    # 하이픈은 제거되어 저장된다.
+    assert "1234567890".encode() in page.data
+
+
+def test_detail_edit_changes_category(client):
+    client.post("/partners/seed", data={"months": "3"})
+    response = client.post(
+        "/partners/1",
+        data={"name": "대한정밀공업", "category_code": "jig", "manager": "이영희", "tier": "1차"},
+    )
+    assert response.status_code == 302
+    payload = client.get("/partners/api/partners.json").get_json()
+    changed = next(item for item in payload["partners"] if item["name"] == "대한정밀공업")
+    assert changed["category_code"] == "jig"
+    assert changed["category"] == "지그"
 
 
 # --- 화면 -------------------------------------------------------------------

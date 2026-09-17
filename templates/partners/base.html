@@ -89,6 +89,21 @@
       background: #f1f3f5; color: var(--muted); margin-left: 4px;
     }
     .tag.critical { background: var(--bad-bg); color: var(--bad); }
+    .badge {
+      display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 1px 7px;
+      border-radius: 4px; background: #eaf1f9; color: #1c4e80; margin-left: 4px;
+      vertical-align: 1px;
+    }
+    .badge.none { background: #f1f3f5; color: var(--muted); font-weight: 400; }
+    .catbar { display: flex; gap: 6px; flex-wrap: wrap; }
+    .catchip {
+      border: 1px solid var(--line); border-radius: 16px; padding: 4px 12px;
+      font-size: 0.84rem; color: var(--ink); background: #fff; white-space: nowrap;
+    }
+    .catchip:hover { background: #f3f4f6; text-decoration: none; }
+    .catchip.on { background: #eaf1f9; border-color: #b9d3ee; color: #1c4e80; font-weight: 600; }
+    .catchip.zero { color: #a6adb6; }
+    .catchip-red { color: var(--bad); font-size: 0.76rem; margin-left: 2px; }
     .chips { display: flex; gap: 10px; flex-wrap: wrap; }
     .chip {
       background: #fff; border: 1px solid var(--line); border-radius: 8px;

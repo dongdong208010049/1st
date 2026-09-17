@@ -13,8 +13,13 @@
         <span class="muted small">{{ '%.1f'|format(score.score) if score.score is not none else '자료 부족' }}점</span>
       </h2>
       <p class="small muted" style="margin:0">
+        {% if partner.category_code %}
+          <span class="badge" style="margin-left:0">{{ category_labels.get(partner.category_code, partner.category_code) }}</span>
+        {% else %}
+          <span class="badge none" style="margin-left:0">미분류</span>
+        {% endif %}
         사업자번호 {{ partner.biz_no }}{% if partner.corp_no %} · 법인번호 {{ partner.corp_no }}{% endif %}
-        · {{ partner.industry or '업종 미지정' }} · {{ partner.tier or '구분 없음' }} · 담당 {{ partner.manager or '미지정' }}
+        · {{ partner.industry or '세부업종 미지정' }} · {{ partner.tier or '구분 없음' }} · 담당 {{ partner.manager or '미지정' }}
       </p>
       {% if score.critical_reasons %}
         <div class="reasons" style="font-size:0.85rem; margin-top:8px">
@@ -74,6 +79,24 @@
     {% endfor %}
   </div>
   {% endfor %}
+</div>
+
+<div class="card">
+  <h2>기본정보</h2>
+  <form method="post" class="filters">
+    <input type="text" name="name" value="{{ partner.name }}" placeholder="협력사명" required>
+    <select name="category_code">
+      <option value="">미분류</option>
+      {% for item in category_options %}
+        <option value="{{ item.code }}" {% if partner.category_code == item.code %}selected{% endif %}>{{ item.label }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="industry" value="{{ partner.industry or '' }}" placeholder="세부 업종" style="width:130px">
+    <input type="text" name="tier" value="{{ partner.tier or '' }}" placeholder="구분(1차/2차)" style="width:110px">
+    <input type="text" name="manager" value="{{ partner.manager or '' }}" placeholder="담당자" style="width:100px">
+    <input type="text" name="dart_corp_code" value="{{ partner.dart_corp_code or '' }}" placeholder="DART 고유번호" style="width:130px">
+    <button type="submit">저장</button>
+  </form>
 </div>
 
 <div class="card">

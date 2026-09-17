@@ -9,13 +9,21 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS partner_categories (
+    code        TEXT PRIMARY KEY,          -- 업종 분류 코드 (mold, production, jig ...)
+    label       TEXT NOT NULL,             -- 화면 표시명 (금형, 양산처, 지그 ...)
+    sort_order  INTEGER NOT NULL DEFAULT 100,
+    active      INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS partners (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     biz_no      TEXT NOT NULL UNIQUE,      -- 사업자등록번호(하이픈 없음)
     corp_no     TEXT,                      -- 법인등록번호
     dart_corp_code TEXT,                   -- DART 고유번호(8자리)
-    industry    TEXT,
+    category_code TEXT REFERENCES partner_categories(code),  -- 업(業) 분류
+    industry    TEXT,                      -- 세부 업종 메모
     manager     TEXT,                      -- 내부 담당자
     tier        TEXT,                       -- 공급 등급/구분
     profile     TEXT DEFAULT 'healthy',    -- 목업 수집기용 시나리오 라벨(실 API 연동 시 무시)
@@ -91,7 +99,15 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """이미 만들어진 DB에 뒤늦게 추가된 컬럼을 채운다."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(partners)")}
+    if "category_code" not in columns:
+        conn.execute("ALTER TABLE partners ADD COLUMN category_code TEXT")
 
 
 # --- 협력사 -----------------------------------------------------------------
@@ -100,7 +116,10 @@ def init_db(conn: sqlite3.Connection) -> None:
 def upsert_partner(conn: sqlite3.Connection, **fields) -> int:
     biz_no = fields["biz_no"]
     row = conn.execute("SELECT id FROM partners WHERE biz_no = ?", (biz_no,)).fetchone()
-    columns = ("name", "biz_no", "corp_no", "dart_corp_code", "industry", "manager", "tier", "profile")
+    columns = (
+        "name", "biz_no", "corp_no", "dart_corp_code",
+        "category_code", "industry", "manager", "tier", "profile",
+    )
     values = {key: fields.get(key) for key in columns}
     if row:
         assignments = ", ".join(f"{key} = :{key}" for key in columns)
@@ -122,6 +141,49 @@ def list_partners(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def get_partner(conn: sqlite3.Connection, partner_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM partners WHERE id = ?", (partner_id,)).fetchone()
+
+
+def update_partner_fields(conn: sqlite3.Connection, partner_id: int, **fields) -> None:
+    """상세 화면에서 고칠 수 있는 항목만 갱신한다."""
+    editable = ("name", "category_code", "industry", "manager", "tier", "corp_no", "dart_corp_code")
+    updates = {key: fields[key] for key in editable if key in fields}
+    if not updates:
+        return
+    assignments = ", ".join(f"{key} = :{key}" for key in updates)
+    conn.execute(f"UPDATE partners SET {assignments} WHERE id = :id", {**updates, "id": partner_id})
+    conn.commit()
+
+
+# --- 업종 카테고리 ----------------------------------------------------------
+
+
+def upsert_category(conn: sqlite3.Connection, code: str, label: str, sort_order: int = 100, active: bool = True) -> None:
+    conn.execute(
+        "INSERT INTO partner_categories (code, label, sort_order, active) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(code) DO UPDATE SET label = excluded.label, "
+        "sort_order = excluded.sort_order, active = excluded.active",
+        (code, label, int(sort_order), 1 if active else 0),
+    )
+    conn.commit()
+
+
+def list_categories(conn: sqlite3.Connection, active_only: bool = True) -> list[sqlite3.Row]:
+    query = "SELECT * FROM partner_categories"
+    if active_only:
+        query += " WHERE active = 1"
+    query += " ORDER BY sort_order, label"
+    return conn.execute(query).fetchall()
+
+
+def category_labels(conn: sqlite3.Connection) -> dict[str, str]:
+    return {row["code"]: row["label"] for row in list_categories(conn, active_only=False)}
+
+
+def count_partners_by_category(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT COALESCE(category_code, '') AS code, COUNT(*) AS n FROM partners GROUP BY code"
+    ).fetchall()
+    return {row["code"]: row["n"] for row in rows}
 
 
 # --- 지표 정의 --------------------------------------------------------------
