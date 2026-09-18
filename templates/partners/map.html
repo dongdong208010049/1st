@@ -1,0 +1,44 @@
+{% extends "partners/base.html" %}
+{% import "partners/_macros.html" as ui %}
+{% block title %}지도 · 협력사 종합 모니터링{% endblock %}
+
+{% block content %}
+<div class="split" style="grid-template-columns: minmax(340px, 620px) 1fr">
+  <div class="card">
+    <div class="card-head">
+      <h2>업종별 배치 ({{ period }} 기준)</h2>
+      <form method="get" class="filters">
+        <select name="category" onchange="this.form.submit()">
+          <option value="">업종 전체</option>
+          {% for item in category_options %}
+            <option value="{{ item.code }}" {% if filters.category == item.code %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    {{ ui.map_panel(map_data, marker_shapes, show_labels=True, caption='주소는 국민연금 사업장 자료·DART 기업개요에서 받아 행정구역 좌표로 배치합니다. 상세 화면에서 위·경도를 직접 넣으면 그 좌표를 씁니다.') }}
+  </div>
+
+  <div class="card">
+    <h2>지도에 올라간 협력사 {{ map_data.markers|length }}곳</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>종합</th><th>협력사</th><th>업종</th><th>주소</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="nowrap">
+            <span class="dot {{ row.score.signal }}"></span>
+            <span class="grade g-{{ row.score.grade }}">{{ row.score.grade }}</span>
+          </td>
+          <td><a href="{{ url_for('partners.detail', partner_id=row.partner.id) }}">{{ row.partner.name }}</a></td>
+          <td class="small">{{ category_labels.get(row.partner.category_code, '미분류') }}</td>
+          <td class="small muted">{{ row.address or '주소 미확인' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

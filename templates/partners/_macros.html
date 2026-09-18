@@ -1,0 +1,143 @@
+{# ─────────────────────────────────────────────────────────────────
+   픽토그램. 글을 줄이는 대신 뜻은 툴팁과 라벨이 지킨다.
+   ───────────────────────────────────────────────────────────────── #}
+{% macro icon(name, size=14) -%}
+<svg class="ico" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+     aria-hidden="true">
+  {%- if name == 'building' -%}
+    <path d="M4 21V5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v16"/><path d="M14 10h5a1 1 0 0 1 1 1v10"/>
+    <path d="M2 21h20"/><path d="M7 8h3M7 12h3M7 16h3M17 14h1M17 18h1"/>
+  {%- elif name == 'coins' -%}
+    <ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/>
+    <path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>
+  {%- elif name == 'trend' -%}
+    <path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>
+  {%- elif name == 'people' -%}
+    <circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/>
+    <path d="M16.5 6.4a3 3 0 0 1 0 5.6"/><path d="M18 20a6 6 0 0 0-2.2-4.6"/>
+  {%- elif name == 'shield' -%}
+    <path d="M12 3l7 3v6c0 4.2-2.9 7.8-7 9-4.1-1.2-7-4.8-7-9V6z"/><path d="M12 9v4"/><path d="M12 16h.01"/>
+  {%- elif name == 'pencil' -%}
+    <path d="M4 20h4l10-10-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>
+  {%- elif name == 'plus' -%}
+    <circle cx="12" cy="12" r="8.5"/><path d="M12 8v8M8 12h8"/>
+  {%- elif name == 'map' -%}
+    <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/>
+  {%- elif name == 'group' -%}
+    <rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/>
+    <rect x="8.5" y="14" width="7" height="7" rx="1.4"/><path d="M6.5 10v2h11v-2M12 12v2"/>
+  {%- elif name == 'handshake' -%}
+    <path d="M8 12l3-3 2 2 3-3"/><path d="M2 9l4-3 5 5"/><path d="M22 9l-4-3-4 4"/>
+    <path d="M2 9v5l6 5 3-2 3 2 6-5V9"/>
+  {%- elif name == 'doc' -%}
+    <path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/>
+    <path d="M9 12h6M9 16h4"/>
+  {%- else -%}
+    <circle cx="12" cy="12" r="8"/>
+  {%- endif -%}
+</svg>
+{%- endmacro %}
+
+{# 신호등 + 픽토그램 + 값 한 조각. 마우스를 올리면 전체 내역이 뜬다. #}
+{% macro status_cell(signal, icon_name, headline, tip) -%}
+  <span class="cell" data-tip="{{ tip }}" tabindex="0">
+    <span class="dot {{ signal }}"></span>{{ icon(icon_name) }}<span class="cell-txt">{{ headline }}</span>
+  </span>
+{%- endmacro %}
+
+{# 지도 마커: 모양 = 업종, 색 = 신호등. 색만으로 업종을 구분하지 않는다. #}
+{% macro marker_shape(shape, x, y, signal, size=6) -%}
+  {%- if shape == 'square' -%}
+    <rect class="mk {{ signal }}" x="{{ x - size }}" y="{{ y - size }}" width="{{ size * 2 }}" height="{{ size * 2 }}" rx="1.5"/>
+  {%- elif shape == 'triangle' -%}
+    <polygon class="mk {{ signal }}" points="{{ x }},{{ y - size - 1 }} {{ x + size + 1 }},{{ y + size }} {{ x - size - 1 }},{{ y + size }}"/>
+  {%- elif shape == 'diamond' -%}
+    <polygon class="mk {{ signal }}" points="{{ x }},{{ y - size - 1 }} {{ x + size + 1 }},{{ y }} {{ x }},{{ y + size + 1 }} {{ x - size - 1 }},{{ y }}"/>
+  {%- elif shape == 'hexagon' -%}
+    <polygon class="mk {{ signal }}" points="{{ x - size }},{{ y - size * 0.55 }} {{ x }},{{ y - size }} {{ x + size }},{{ y - size * 0.55 }} {{ x + size }},{{ y + size * 0.55 }} {{ x }},{{ y + size }} {{ x - size }},{{ y + size * 0.55 }}"/>
+  {%- elif shape == 'pentagon' -%}
+    <polygon class="mk {{ signal }}" points="{{ x }},{{ y - size - 1 }} {{ x + size }},{{ y - size * 0.2 }} {{ x + size * 0.62 }},{{ y + size }} {{ x - size * 0.62 }},{{ y + size }} {{ x - size }},{{ y - size * 0.2 }}"/>
+  {%- else -%}
+    <circle class="mk {{ signal }}" cx="{{ x }}" cy="{{ y }}" r="{{ size }}"/>
+  {%- endif -%}
+{%- endmacro %}
+
+{# 업종 배지. 텍스트가 곧 식별자이고, 색은 스캔을 돕는 보조 수단이다. #}
+{% macro category_badge(code, labels, classes) -%}
+  {%- if code -%}
+    <span class="badge {{ classes.get(code, 'c-1') }}">{{ labels.get(code, code) }}</span>
+  {%- else -%}
+    <span class="badge none">미분류</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# 지도 한 장 + 범례 #}
+{% macro map_panel(map_data, shapes, caption=None, show_labels=False, show_legend=True) -%}
+  <div class="map-wrap">
+    <svg class="map-svg" width="{{ map_data.width }}" height="{{ map_data.height }}"
+         viewBox="0 0 {{ map_data.width }} {{ map_data.height }}" role="img"
+         aria-label="협력사 위치 지도">
+      {% for path in map_data.outlines %}
+        <polygon class="map-land" points="{{ path }}"/>
+      {% endfor %}
+      {% for m in map_data.markers %}
+        <a class="marker" href="{{ url_for('partners.detail', partner_id=m.id) }}">
+          <title>{{ m.name }} · {{ m.grade }}등급 · {{ m.address }}</title>
+          {{ marker_shape(m.shape, m.x, m.y, m.signal) }}
+          {% if show_labels and m.signal == 'red' %}
+            <text x="{{ m.x + 10 }}" y="{{ m.y + 3.5 }}">{{ m.name }}</text>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </svg>
+    <div class="legend">
+      {% if show_legend %}
+      <div class="tiny muted" style="text-transform:uppercase; letter-spacing:.04em">모양 = 업종</div>
+      {% for item in shapes %}
+        <div class="legend-row">
+          <svg width="16" height="16" viewBox="0 0 16 16">{{ marker_shape(item.shape, 8, 8, 'none', 5.5) }}</svg>
+          {{ item.label }}
+        </div>
+      {% endfor %}
+      <div class="tiny muted" style="text-transform:uppercase; letter-spacing:.04em; margin-top:6px">색 = 신호등</div>
+      <div class="legend-row"><span class="dot red"></span>경고 · 즉시위험</div>
+      <div class="legend-row"><span class="dot amber"></span>주의</div>
+      <div class="legend-row"><span class="dot green"></span>정상</div>
+      {% endif %}
+      {% if map_data.missing %}
+        <div class="tiny muted" style="margin-top:6px">
+          주소 미확인 {{ map_data.missing|length }}곳: {{ map_data.missing|join(', ') }}
+        </div>
+      {% endif %}
+      {% if caption %}<div class="tiny muted" style="margin-top:6px">{{ caption }}</div>{% endif %}
+    </div>
+  </div>
+{%- endmacro %}
+
+{# 뉴스 티커. 클릭하면 해당 협력사 상세로 점프한다. #}
+{% macro ticker_bar(items, new_count=0, seen_id=0) -%}
+  {% if items %}
+  <div class="ticker">
+    <div class="ticker-label">
+      업데이트
+      {% if new_count %}<span class="ticker-count">{{ new_count }}</span>{% endif %}
+    </div>
+    <div class="ticker-viewport">
+      <div class="ticker-track">
+        {% for pass in range(2) %}
+          {% for item in items %}
+            <a class="ticker-item {{ 'is-new' if item.id > seen_id }}"
+               href="{{ url_for('partners.detail', partner_id=item.partner_id, _anchor=item.anchor or None) }}">
+              <span class="dot {{ 'red' if item.severity == 'critical' else ('amber' if item.severity == 'warn' else ('green' if item.severity == 'good' else 'none')) }}"></span>
+              <b>{{ item.partner_name }}</b>
+              {{ item.title }}{% if item.detail %} <span class="muted">{{ item.detail }}</span>{% endif %}
+              <span class="when">{{ item.created_at[5:10] }}</span>
+            </a>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{%- endmacro %}

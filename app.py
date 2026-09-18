@@ -10,6 +10,7 @@ from flask import Flask, flash, redirect, render_template, request, send_file, u
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
+import partners
 from converter import ConversionError, convert_to_pdf
 
 ALLOWED_EXTENSIONS = {".hwp", ".hwpx"}
@@ -18,6 +19,9 @@ MAX_CONTENT_LENGTH = 20 * 1024 * 1024  # 20 MB
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
+
+# 협력사 종합 모니터링 대시보드(/partners)를 같은 앱에 붙인다.
+partners.init_app(app)
 
 
 def _is_allowed(filename: str) -> bool:

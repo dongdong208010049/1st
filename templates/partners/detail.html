@@ -1,0 +1,300 @@
+{% extends "partners/base.html" %}
+{% import "partners/_macros.html" as ui %}
+{% block title %}{{ partner.name }} · 협력사 모니터링{% endblock %}
+
+{% block content %}
+<p class="small"><a href="{{ url_for('partners.index') }}">← 리스트</a></p>
+
+<div class="card" id="overview">
+  <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap">
+    <div style="flex:1 1 380px">
+      <h1 style="font-size:1.25rem">
+        <span class="dot {{ score.signal }}"></span>{{ partner.name }}
+        <span class="grade g-{{ score.grade }}">{{ score.grade }}</span>
+        <span class="muted small num">{{ '%.1f'|format(score.score) if score.score is not none else '자료 부족' }}점</span>
+        {{ ui.category_badge(partner.category_code, category_labels, cat_class) }}
+      </h1>
+      <p class="small muted" style="margin:6px 0 0">
+        {% if partner.relation == 'affiliate' %}<span class="tag ok">계열사</span>{% endif %}
+        {% if partner.group_name %}<span class="tag" data-tip="기업집단">{{ partner.group_name }}</span>{% endif %}
+        사업자번호 {{ partner.biz_no }} · {{ partner.industry or '세부업종 미지정' }}
+        · {{ partner.tier or '구분 없음' }} · 담당 {{ partner.manager or '미지정' }}
+      </p>
+      {% if score.critical_reasons %}
+        <span class="alert" style="margin-top:8px">
+          <strong>즉시위험</strong> — {{ score.critical_reasons|join(' / ') }}
+        </span>
+      {% endif %}
+      {% if score.penalties %}
+        <p class="tiny muted" style="margin:6px 0 0">자동 감점: {{ score.penalties|join(' · ') }}</p>
+      {% endif %}
+      <p class="tiny muted" style="margin:4px 0 0">
+        지표 충족률 {{ '%.0f'|format(score.coverage * 100) }}%
+        {%- if score.grade_cap %} <span class="tag critical">자료 부족 → 등급 상한 {{ score.grade_cap }}</span>{% endif %}
+        · 자료원 {{ score.sources|join(', ') if score.sources else '없음' }}
+        · 최종 수집 {{ score.last_collected_at[:16] if score.last_collected_at else '없음' }}
+      </p>
+      {% if 'dart' not in score.sources %}
+        <span class="alert warn" style="margin-top:8px">
+          공시 재무가 없는 협력사입니다(외부감사 대상 아님).
+          연금 인원·신고소득, 신용등급, 제출자료, 법적 사건으로 감시합니다.
+        </span>
+      {% endif %}
+    </div>
+    <div>
+      <div class="tiny muted" style="text-transform:uppercase; letter-spacing:.04em">종합점수 12개월</div>
+      {% if trend_points %}
+        <svg width="240" height="48" viewBox="0 0 240 48" aria-hidden="true">
+          <polyline points="{{ trend_points }}" fill="none" stroke="var(--brand)" stroke-width="1.8"/>
+        </svg>
+      {% else %}<p class="small muted">시계열 자료가 부족합니다.</p>{% endif %}
+      <form method="get" class="filters" style="margin-top:4px">
+        <select name="period" onchange="this.form.submit()">
+          {% for item in periods[-36:]|reverse %}<option value="{{ item }}" {% if period == item %}selected{% endif %}>{{ item }} 기준</option>{% endfor %}
+        </select>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="split">
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <h2>기업개요</h2>
+        <span class="tiny muted">값이 바뀌면 이력으로 쌓입니다</span>
+      </div>
+      <form method="post">
+        <input type="hidden" name="action" value="update_overview">
+        {% for field in profile_fields %}
+          {% set current = profile.get(field.code) %}
+          <div class="kv" style="align-items:center; gap:8px">
+            <span class="small nowrap" style="flex:0 0 78px">{{ field.label }}</span>
+            <span style="display:flex; gap:6px; align-items:center; flex:1 1 auto; min-width:0">
+              <input type="{{ 'date' if field.kind == 'date' else ('number' if field.kind == 'number' else 'text') }}"
+                     {% if field.kind == 'number' %}step="any"{% endif %}
+                     name="profile__{{ field.code }}" value="{{ current.value if current else '' }}"
+                     style="flex:1 1 auto; min-width:0">
+              {% if current %}<span class="tiny muted nowrap">{{ current.valid_from }}</span>{% endif %}
+            </span>
+          </div>
+        {% endfor %}
+        <div style="display:flex; gap:8px; align-items:center; margin-top:10px">
+          <button type="submit">개요 저장</button>
+          <label class="tiny muted">확인일 <input type="date" name="valid_from" style="width:132px"></label>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>위치</h2>
+      {{ ui.map_panel(map_point, [], show_legend=False,
+        caption=profile.get('address').value if profile.get('address') else '주소 미확인 — 개요에 주소를 넣거나 위·경도를 직접 입력하세요.') }}
+    </div>
+
+    <div class="card">
+      <h2>상태 이력 ({{ history_start }} 이후)</h2>
+      {% for block in status_history %}
+        <div class="tiny muted" style="margin-top:6px">{{ block.label }}</div>
+        {% for entry in block.timeline|reverse %}
+          <div class="kv">
+            <span>
+              {% if (entry.value or 0) >= 1 %}<span class="dot red"></span>{% else %}<span class="dot green"></span>{% endif %}
+              {{ entry.label }}
+            </span>
+            <span class="tiny muted num nowrap">
+              {{ entry.since }}{% if entry.until != entry.since %} ~ {{ entry.until }}{% endif %}
+            </span>
+          </div>
+        {% else %}
+          <p class="small muted">자료 없음</p>
+        {% endfor %}
+      {% endfor %}
+    </div>
+
+    {% if siblings %}
+    <div class="card">
+      <h2>{{ ui.icon('group') }} 같은 기업집단 ({{ partner.group_name }})</h2>
+      {% for item in siblings %}
+        <a class="kv" style="text-decoration:none" href="{{ url_for('partners.detail', partner_id=item.id) }}">
+          <span class="small">{{ item.name }}
+            {% if item.relation == 'affiliate' %}<span class="tag ok">계열</span>{% endif %}
+          </span>
+          <span class="tiny muted">{{ category_labels.get(item.category_code, '미분류') }}</span>
+        </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-head">
+        <h2>개요 변경 이력</h2>
+        <a class="tiny" href="{{ url_for('partners.changes_view', partner=partner.id) }}">변동이력 전체 →</a>
+      </div>
+      {% for item in profile_changes %}
+        <div class="kv">
+          <span class="small">{{ item.label }} · {{ item.value or '(비움)' }}</span>
+          <span class="tiny muted nowrap">{{ item.valid_from }} · {{ item.source or '-' }}</span>
+        </div>
+      {% else %}
+        <p class="small muted">변경 이력이 없습니다.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div>
+    <div class="card" id="revenue-chart">
+      <div class="card-head">
+        <h2>{{ ui.icon('trend') }} 최근 {{ yearly.bars|length or 3 }}년 {{ yearly.label }}</h2>
+        <span class="small">
+          {% if yearly.cagr is not none %}
+            <span class="muted tiny" data-tip="연평균 성장률 (CAGR)">연평균</span>
+            <span class="delta num {{ 'up' if yearly.cagr > 0 else ('down' if yearly.cagr < 0 else '') }}">
+              {{ '%+.1f'|format(yearly.cagr) }}%
+            </span>
+          {% endif %}
+          {% if yearly.change is not none %}
+            <span class="muted tiny" style="margin-left:8px" data-tip="첫 해 대비 최근 해">누적</span>
+            <span class="delta num {{ 'up' if yearly.change > 0 else ('down' if yearly.change < 0 else '') }}">
+              {{ '%+.1f'|format(yearly.change) }}%
+            </span>
+          {% endif %}
+        </span>
+      </div>
+
+      {% if yearly.bars %}
+        <svg class="chart" viewBox="0 -24 {{ yearly.width }} {{ yearly.plot_height + 70 }}"
+             width="{{ yearly.width }}" height="{{ yearly.plot_height + 70 }}" role="img"
+             aria-label="최근 {{ yearly.bars|length }}년 {{ yearly.label }} 추이">
+          <!-- 기준선만 두고 격자는 쓰지 않는다. 막대는 0에서 시작한다. -->
+          <line x1="0" y1="{{ yearly.plot_height + 0.5 }}" x2="{{ yearly.width }}" y2="{{ yearly.plot_height + 0.5 }}"
+                stroke="var(--rule)" stroke-width="1"/>
+          {% for bar in yearly.bars %}
+            <g class="chart-bar" data-tip="{{ bar.year }}년 {{ '{:,.0f}'.format(bar.value) if bar.value is not none else '자료 없음' }}{{ yearly.unit if bar.value is not none else '' }}{% if bar.yoy is not none %}&#10;전년 대비 {{ '%+.1f'|format(bar.yoy) }}%{% endif %}">
+              <rect x="{{ bar.x }}" y="0" width="{{ bar.w }}" height="{{ yearly.plot_height }}" fill="transparent"/>
+              {% if bar.value is not none %}
+                <rect class="bar-mark {{ 'is-latest' if bar.latest }}" x="{{ bar.x }}" y="{{ bar.y }}"
+                      width="{{ bar.w }}" height="{{ bar.h }}" rx="4" ry="4"/>
+                <text class="bar-label" x="{{ bar.cx }}" y="{{ bar.y - 9 }}" text-anchor="middle">
+                  {{ '{:,.0f}'.format(bar.value) }}
+                </text>
+                {% if bar.yoy is not none %}
+                  <text class="bar-delta {{ 'up' if bar.yoy > 0 else 'down' }}" x="{{ bar.cx }}" y="{{ yearly.plot_height + 32 }}" text-anchor="middle">
+                    {{ '▲' if bar.yoy > 0 else '▼' }}{{ '%.1f'|format(bar.yoy|abs) }}%
+                  </text>
+                {% endif %}
+              {% else %}
+                <rect class="bar-empty" x="{{ bar.x }}" y="{{ yearly.plot_height - 6 }}" width="{{ bar.w }}" height="6" rx="3"/>
+                <text class="bar-label muted-text" x="{{ bar.cx }}" y="{{ yearly.plot_height - 14 }}" text-anchor="middle">자료 없음</text>
+              {% endif %}
+              <text class="bar-year {{ 'is-latest' if bar.latest }}" x="{{ bar.cx }}" y="{{ yearly.plot_height + 17 }}" text-anchor="middle">
+                {{ bar.year }}
+              </text>
+            </g>
+          {% endfor %}
+        </svg>
+        <p class="tiny muted" style="margin:6px 0 0">
+          단위 {{ yearly.unit }} · {{ yearly.note }}
+        </p>
+      {% else %}
+        <p class="small muted">
+          매출 자료가 없습니다. 표준재무제표증명·부가세 과세표준증명을 징구해
+          아래 '지표 직접 입력'에 넣으면 이 그래프가 채워집니다.
+        </p>
+      {% endif %}
+    </div>
+
+    <div class="grid">
+      {% for category in categories %}
+      <div class="card" id="cat-{{ loop.index }}">
+        <h2><span class="dot {{ score.category_signal(category) }}"></span>{{ category }}</h2>
+        {% for item in histories if item.metric.category == category %}
+          <div class="kv" id="metric-{{ item.metric.code }}">
+            <span class="small">
+              <span class="dot {{ item.metric.signal }}"></span>{{ item.metric.label }}
+              {% if item.metric.weight %}<span class="tag">가중 {{ '%g'|format(item.metric.weight) }}</span>{% endif %}
+            </span>
+            <span class="nowrap">
+              {% if item.points %}
+                <svg width="60" height="18" viewBox="0 0 60 18" aria-hidden="true" style="margin-right:6px; vertical-align:middle">
+                  <polyline points="{{ item.points }}" fill="none" stroke="var(--muted)" stroke-width="1.4"/>
+                </svg>
+              {% endif %}
+              <strong class="num">{{ item.metric.display }}</strong>
+              {% if item.metric.score is not none %}<span class="tiny muted num">({{ '%.0f'|format(item.metric.score) }}점)</span>{% endif %}
+              {% if item.metric.stale %}<span class="tag">노후</span>{% endif %}
+            </span>
+          </div>
+        {% else %}
+          <p class="small muted">이 카테고리에 활성 지표가 없습니다.</p>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="card" id="events">
+  <h2>리스크 이벤트</h2>
+  {% for event in events %}
+    <div class="kv">
+      <span class="small">
+        <span class="tag {{ 'critical' if event.severity == 'critical' else '' }}">{{ event.kind }}</span>
+        {% if event.url %}<a href="{{ event.url }}" rel="noreferrer noopener">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}
+      </span>
+      <span class="tiny muted num nowrap">{{ event.occurred_on }}{% if event.source %} · {{ event.source }}{% endif %}</span>
+    </div>
+  {% else %}
+    <p class="small muted">최근 확인된 이벤트가 없습니다.</p>
+  {% endfor %}
+</div>
+
+<div class="split">
+  <div class="card" id="submissions">
+    <h2>제출자료 징구</h2>
+    <p class="tiny muted">
+      공시 재무가 없는 협력사는 국세청 발급 증명을 정기적으로 받아 확인합니다.
+      제출 지연 자체가 신호이므로 '자료 제출 경과' 지표로 채점에 반영됩니다.
+    </p>
+    {% for item in submissions %}
+      <div class="kv">
+        <span class="small"><span class="tag">{{ item.doc_type }}</span> {{ item.period or '' }} {{ item.note or '' }}</span>
+        <span class="tiny muted num nowrap">{{ item.submitted_on }}</span>
+      </div>
+    {% else %}
+      <span class="alert">제출 기록이 없습니다. 징구 대상입니다.</span>
+    {% endfor %}
+    <form method="post" class="filters" style="margin-top:12px">
+      <input type="hidden" name="action" value="add_submission">
+      <select name="doc_type">
+        {% for item in doc_types %}<option value="{{ item }}">{{ item }}</option>{% endfor %}
+      </select>
+      <input type="date" name="submitted_on" required>
+      <input type="text" name="period" placeholder="대상 기간" style="width:150px">
+      <input type="text" name="note" placeholder="비고" style="width:110px">
+      <button type="submit">제출 등록</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>지표 직접 입력</h2>
+    <p class="tiny muted">
+      제출받은 증명의 수치를 넣으면 DART가 있는 협력사와 같은 기준으로 채점됩니다(자료원 <code>manual</code>).
+    </p>
+    <form method="post" class="filters">
+      <input type="hidden" name="action" value="manual_value">
+      <select name="metric_code">
+        {% for defn in metric_defs %}
+          <option value="{{ defn.code }}">{{ defn.category }} · {{ defn.label }}{% if defn.unit %} ({{ defn.unit }}){% endif %}</option>
+        {% endfor %}
+      </select>
+      <select name="value_period">
+        {% for item in recent_period_options %}<option value="{{ item }}">{{ item }}</option>{% endfor %}
+      </select>
+      <input type="number" step="any" name="value" placeholder="값" required style="width:100px">
+      <input type="text" name="value_text" placeholder="표시 문구(선택)" style="width:140px">
+      <button type="submit">입력</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
